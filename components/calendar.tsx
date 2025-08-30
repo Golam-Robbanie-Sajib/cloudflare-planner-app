@@ -573,7 +573,7 @@ const handleSyncTask = async (task: CalendarTask) => {
           )}
 
           {view === "weekly" && (
-            <div className="grid grid-cols-7 gap-4">
+            <div className="grid grid-cols-1 grid-cols-7 gap-4">
               {Array.from({ length: 7 }).map((_, i) => {
                 const dayDate = new Date(date.getTime())
                 dayDate.setDate(date.getDate() - date.getDay() + i)
@@ -611,11 +611,12 @@ const handleSyncTask = async (task: CalendarTask) => {
           )}
 
           {view === "monthly" && (
-            <div className="grid grid-cols-7 gap-2">
-              {Array.from({ length: 42 }).map((_, i) => {
-                const currentDate = new Date(date.getFullYear(), date.getMonth(), 1)
-                const firstDay = currentDate.getDay()
-                const day = i - firstDay + 1
+            <div className="overflow-x-auto">
+              <div className="grid grid-cols-7 gap-2 min-w-[500px]">
+                {Array.from({ length: 42 }).map((_, i) => {
+                  const currentDate = new Date(date.getFullYear(), date.getMonth(), 1)
+                  const firstDay = currentDate.getDay()
+                  const day = i - firstDay + 1
                 currentDate.setDate(day)
 
                 const isCurrentMonth = currentDate.getMonth() === date.getMonth()
@@ -655,6 +656,7 @@ const handleSyncTask = async (task: CalendarTask) => {
                 )
               })}
             </div>
+          </div>
           )}
         </CardContent>
       </Card>
