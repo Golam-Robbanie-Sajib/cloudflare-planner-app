@@ -1,12 +1,9 @@
-// /app/api/[[...path]]/route.js
-
+// functions/api/[[...path]].js
 import { Hono } from 'hono';
-import { handle } from 'hono/vercel';
-import { cors } from 'hono/cors'; // <-- ADD THIS IMPORT
+import { handle } from 'hono/cloudflare-pages';
+import { cors } from 'hono/cors';
 
-// =================================================================
-// SECTION 1: THE LEARNING PLANNER SERVICE (UNCHANGED)
-// =================================================================
+// Your existing LearningPlannerService class (unchanged)
 const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
 const CALENDAR_API_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 const DEFAULT_TIMEZONE = 'Asia/Dhaka';
@@ -108,20 +105,15 @@ class LearningPlannerService {
     }
 }
 
-
-// =================================================================
-// SECTION 3: THE HONO APP AND ROUTES
-// =================================================================
-export const runtime = 'edge';
+// Hono app setup for Cloudflare Pages
 const app = new Hono().basePath('/api');
 
-// --- THIS IS THE ONLY PART YOU NEED TO EDIT ---
+// CORS configuration
 const appOrigins = [ 
     'http://localhost:3000', 
-    'https://cloudflare-planner-app.pages.dev' // <-- THIS IS YOUR PRODUCTION DOMAIN
+    'https://cloudflare-planner-app.pages.dev'
 ];
 app.use('*', cors({ origin: appOrigins }));
-// ---------------------------------------------
 
 const handleServiceError = (error, c) => {
     console.error(`Service error: ${error}`);
@@ -132,7 +124,7 @@ const handleServiceError = (error, c) => {
 // API Routes
 app.post('/chat-message', async (c) => {
     try {
-        const planner = new LearningPlannerService(process.env.GOOGLE_API_KEY);
+        const planner = new LearningPlannerService(c.env.GOOGLE_API_KEY);
         const { userMessage, chatHistory = [] } = await c.req.json();
         const aiResponseText = await planner.handleChatMessage(userMessage, chatHistory);
         return c.json({ aiResponse: aiResponseText });
@@ -141,7 +133,7 @@ app.post('/chat-message', async (c) => {
 
 app.post('/generate-plan', async (c) => {
     try {
-        const planner = new LearningPlannerService(process.env.GOOGLE_API_KEY);
+        const planner = new LearningPlannerService(c.env.GOOGLE_API_KEY);
         const body = await c.req.json();
         const [tasks, plan] = await planner.generateStructuredPlan({ ...body, startDateStr: body.startDate });
         if (!tasks) return c.json({ detail: plan }, 422);
@@ -151,7 +143,7 @@ app.post('/generate-plan', async (c) => {
 
 app.post('/integrate-plan', async (c) => {
     try {
-        const planner = new LearningPlannerService(process.env.GOOGLE_API_KEY);
+        const planner = new LearningPlannerService(c.env.GOOGLE_API_KEY);
         const authHeader = c.req.header('authorization');
         const accessToken = authHeader?.split(' ')[1];
         if (!accessToken) return c.json({ detail: "Authorization header is missing" }, 401);
@@ -164,9 +156,5 @@ app.post('/integrate-plan', async (c) => {
 
 app.get('/', (c) => c.json({ message: "API is running!" }));
 
-
-// =================================================================
-// SECTION 4: THE NEXT.JS EXPORTS
-// =================================================================
-export const GET = handle(app);
-export const POST = handle(app);
+// Export for Cloudflare Pages Functions
+export const onRequest = handle(app);

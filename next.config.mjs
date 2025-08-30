@@ -1,31 +1,29 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Enable static exports for better Cloudflare Pages compatibility
-  //output: 'export',
+  // Don't use static export for Cloudflare Pages with Functions
+  // output: 'export', // <- REMOVE THIS LINE
   trailingSlash: true,
   
-  // Disable image optimization for static export
+  // Keep image optimization disabled for Cloudflare
   images: {
     unoptimized: true,
   },
   
-  // Optimize build for Cloudflare Pages
+  // Optimize for Cloudflare Pages
   experimental: {
-    // Disable webpack cache to avoid file size issues
     webpackBuildWorker: false,
   },
   
-  // Webpack configuration
   webpack: (config, { isServer }) => {
-    // Disable webpack cache to prevent large cache files
     config.cache = false;
-    
     return config;
   },
   
-  // Environment variables
+  // Set API URL for production
   env: {
-    CUSTOM_KEY: process.env.CUSTOM_KEY,
+    NEXT_PUBLIC_API_URL: process.env.NODE_ENV === 'production' 
+      ? 'https://cloudflare-planner-app.pages.dev/api'
+      : 'http://localhost:3000/api',
   },
 };
 
