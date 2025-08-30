@@ -1,4 +1,4 @@
-// functions/api/[[...path]].js
+// functions/api/[[...path]]/[[path]].js
 import { Hono } from 'hono';
 import { handle } from 'hono/cloudflare-pages';
 import { cors } from 'hono/cors';

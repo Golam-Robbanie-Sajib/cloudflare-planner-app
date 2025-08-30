@@ -1,4 +1,4 @@
-// frontend/components/upcoming-events.tsx
+//components/upcoming-events.tsx
 
 "use client";
 

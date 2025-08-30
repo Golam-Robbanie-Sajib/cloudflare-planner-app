@@ -1,4 +1,4 @@
-// frontend/lib/firestore-profile.ts
+//lib/firestore-profile.ts
 import { doc, getDoc, setDoc, updateDoc, Timestamp } from "firebase/firestore"
 import { db } from "./firebase"
 

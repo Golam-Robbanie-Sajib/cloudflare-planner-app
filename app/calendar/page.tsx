@@ -1,4 +1,4 @@
-// frontend/app/calendar/page.tsx
+//app/calendar/page.tsx
 
 "use client"
 

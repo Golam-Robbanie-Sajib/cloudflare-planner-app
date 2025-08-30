@@ -1,4 +1,4 @@
-// frontend/components/google-auth-button.tsx
+//components/google-auth-button.tsx
 
 "use client"
 

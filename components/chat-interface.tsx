@@ -1,4 +1,4 @@
-// frontend/components/chat-interface.tsx
+//components/chat-interface.tsx
 
 "use client"
 

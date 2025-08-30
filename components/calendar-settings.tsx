@@ -1,4 +1,4 @@
-// frontend/components/calendar-settings.tsx
+//components/calendar-settings.tsx
 
 "use client"
 

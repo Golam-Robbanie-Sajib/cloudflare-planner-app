@@ -1,4 +1,4 @@
-// frontend/components/top-navigation.tsx
+//components/top-navigation.tsx
 
 "use client"
 

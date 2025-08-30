@@ -1,4 +1,4 @@
-// frontend/app/page.tsx
+//app/page.tsx
 
 import Calendar from "@/components/calendar"
 import ChatInterface from "@/components/chat-interface"

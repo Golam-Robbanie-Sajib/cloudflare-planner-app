@@ -1,4 +1,4 @@
-// frontend/app/events/page.tsx
+//app/events/page.tsx
 
 "use client"
 

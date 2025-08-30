@@ -1,4 +1,4 @@
-//frontend/hooks/use-toast.ts
+//hooks/use-toast.ts
 
 // Inspired by react-hot-toast library
 import * as React from "react"

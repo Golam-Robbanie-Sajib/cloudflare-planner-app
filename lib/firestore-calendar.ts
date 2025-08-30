@@ -1,4 +1,4 @@
-// frontend/lib/firestore-calendar.ts
+//lib/firestore-calendar.ts
 import { 
   collection, 
   doc, 

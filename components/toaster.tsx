@@ -1,4 +1,4 @@
-// frontend/components/toaster.tsx
+//components/toaster.tsx
 
 "use client"
 

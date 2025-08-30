@@ -1,4 +1,4 @@
-// frontend/lib/profile-store.tsx
+//lib/profile-store.tsx
 "use client"
 import { createContext, useContext, useState, useEffect, ReactNode } from "react"
 import { useAuth } from "./auth-context"
