@@ -272,7 +272,7 @@ const handleSyncTask = async (task: CalendarTask) => {
 
   // Get tasks for the selected date
   const getTasksForDate = (targetDate: Date) => {
-    const dateString = targetDate.toISOString().split("T")[0]
+    const dateString = format(targetDate, "yyyy-MM-dd")
     return tasks.filter((task) => task.date === dateString)
   }
 
