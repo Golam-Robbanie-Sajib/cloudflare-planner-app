@@ -2,21 +2,22 @@
 
 // =================================================================
 // SECTION 1: REQUIRED IMPORTS
-// All backend dependencies are here.
+// We now import Hono and its CORS middleware.
 // =================================================================
-const express = require('express');
-const cors = require('cors');
-const { google } = require('googleapis');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+import { Hono } from 'hono';
+import { cors } from 'hono/cors';
+import { google } from 'googleapis';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 // =================================================================
 // SECTION 2: THE LEARNING PLANNER SERVICE CLASS
-// All the logic from your planner_service.js is now inside this file.
+// All of your original business logic, including the prompt, is here.
+// This code is copied directly from your planner_service.js.
 // =================================================================
 const GOOGLE_API_KEY_ENV_VAR = "GOOGLE_API_KEY";
 const CALENDAR_API_VERSION = 'v3';
 const CALENDAR_ID_PRIMARY = 'primary';
-const DEFAULT_TIMEZONE = 'Asia/Dhaka'; // Hardcoded for serverless environment
+const DEFAULT_TIMEZONE = 'Asia/Dhaka';
 const GEMINI_MODEL_NAME = 'gemini-1.5-flash';
 
 class LearningPlannerService {
@@ -84,20 +85,21 @@ class LearningPlannerService {
             "1. A 'human_readable_plan' which is a conversational, detailed, multi-paragraph summary of the learning plan.",
             "2. A 'structured_tasks' component as a JSON array of objects. EACH object must represent a single task.",
             "Strictly adhere to the following JSON structure for each task object:",
-            `   - "summary" (string): A concise title for the task (e.g., 'Learn FastAPI Basics').`,
-            `   - "description" (string, nullable): A more detailed explanation of what the task involves.`,
-            `   - "startTime" (string): ISO 8601 formatted datetime (YYYY-MM-DDTHH:MM:SS) in the local timezone of '${DEFAULT_TIMEZONE}'.`,
-            `   - "endTime" (string): ISO 8601 formatted datetime (YYYY-MM-DDTHH:MM:SS) in the local timezone of '${DEFAULT_TIMEZONE}'.`,
+            "   - `summary` (string): A concise title for the task (e.g., 'Learn FastAPI Basics', 'Build User Authentication').",
+            "   - `description` (string, nullable): A more detailed explanation of what the task involves. Can be null if not applicable.",
+            "   - `startTime` (string): ISO 8601 formatted datetime (YYYY-MM-DDTHH:MM:SS) for when the task starts. Ensure it includes time and is in the local timezone of '" + DEFAULT_TIMEZONE + "'.",
+            "   - `endTime` (string): ISO 8601 formatted datetime (YYYY-MM-DDTHH:MM:SS) for when the task ends. Must be after startTime and in the local timezone of '" + DEFAULT_TIMEZONE + "'.",
             "\nPlace the JSON block **ONLY** after the human_readable_plan.",
             "Use the precise delimiters `---JSON_PLAN_START---` and `---JSON_PLAN_END---` to clearly mark the JSON block.",
-            `The current date is ${currentDate}. Adjust suggested start dates if they fall in the past to a sensible future date.`,
+            "Ensure the JSON is valid and can be directly parsed without issues.",
+            `The current date is ${currentDate}. Adjust suggested start dates if they fall in the past to a sensible future date (e.g., next Monday).`
         ];
 
         if (refinementInstruction && existingPlanTasksForRefinement) {
             promptParts.push("\n\n***PLAN REFINEMENT REQUEST***");
             promptParts.push(`Refine the following existing plan for the goal '${goal}':`);
             existingPlanTasksForRefinement.forEach((task, i) => {
-                promptParts.push(`- Task ${i + 1}: '${task.summary || 'N/A'}' from ${task.startTime || 'N/A'} to ${task.endTime || 'N/A'}.`);
+                promptParts.push(`- Task ${i + 1}: '${task.summary || 'N/A'}' from ${task.startTime || 'N/A'} to ${task.endTime || 'N/A'}. Desc: ${task.description || 'N/A'}`);
             });
             promptParts.push(`\nRefinement instruction: '${refinementInstruction}'`);
             promptParts.push(`The REFINED plan must now be for ${durationDays} days, starting around ${startDateStr}.`);
@@ -105,6 +107,7 @@ class LearningPlannerService {
             if (preferredTimeStr) promptParts.push(`Consider the preferred time of day: ${preferredTimeStr}.`);
         } else {
             promptParts.push("\n\n***NEW PLAN GENERATION REQUEST***");
+            promptParts.push("Generate a detailed learning plan with the following details:");
             promptParts.push(`- Goal/Skill: ${goal}`);
             promptParts.push(`- Duration: ${durationDays} days`);
             promptParts.push(`- Desired Start Date: ${startDateStr}`);
@@ -114,20 +117,29 @@ class LearningPlannerService {
         }
 
         const fullPrompt = promptParts.join('\n');
-        const geminiContentsForApiCall = chatHistoryForContext ? chatHistoryForContext.map(msg => ({ role: msg.role, parts: msg.parts })) : [];
+        const geminiContentsForApiCall = [];
+        if (chatHistoryForContext) {
+            for (const msg of chatHistoryForContext) {
+                const role = msg.role === 'model' ? 'model' : 'user';
+                const textParts = (msg.parts || []).filter(part => part.text).map(part => part.text);
+                if (textParts.length > 0) {
+                    geminiContentsForApiCall.push({ role, parts: [{ text: textParts.join('\n') }] });
+                }
+            }
+        }
         geminiContentsForApiCall.push({ role: 'user', parts: [{ text: fullPrompt }] });
 
         try {
             const result = await this.model.generateContent({ contents: geminiContentsForApiCall });
             const response = await result.response;
             if (response.promptFeedback && response.promptFeedback.blockReason) {
-                return [null, `Plan generation failed due to content policy: ${response.promptFeedback.blockReason}.`];
+                return [null, `Plan generation failed due to content policy: ${response.promptFeedback.blockReason}. Please rephrase.`];
             }
             const aiResponseText = response.text().trim();
             const jsonStartTag = "---JSON_PLAN_START---";
             const jsonEndTag = "---JSON_PLAN_END---";
             if (!aiResponseText.includes(jsonStartTag) || !aiResponseText.includes(jsonEndTag)) {
-                return [null, "AI did not provide a structured plan in the expected format."];
+                return [null, "AI did not provide a structured plan in the expected format (missing delimiters)."];
             }
             const humanReadablePlanContent = aiResponseText.split(jsonStartTag)[0].trim();
             const jsonBlockRaw = aiResponseText.split(jsonStartTag)[1].split(jsonEndTag)[0];
@@ -137,11 +149,11 @@ class LearningPlannerService {
             this.lastGeneratedPlanSkillName = goal;
             return [parsedStructuredData, humanReadablePlanContent];
         } catch (error) {
-            console.error(`Error during plan generation: ${error}`);
+            console.error(`Error during plan generation or parsing: ${error}`);
             if (error instanceof SyntaxError) {
                  return [null, `AI generated an invalid structured plan: ${error.message}.`];
             }
-            return [null, `An unexpected error occurred: ${error.message}`];
+            return [null, `An unexpected error occurred while generating the plan: ${error.message}`];
         }
     }
 
@@ -175,83 +187,93 @@ class LearningPlannerService {
     }
 }
 
-// =================================================================
-// SECTION 3: THE EXPRESS APP AND ROUTES
-// All the logic from your main_api.js is now here.
-// =================================================================
-const app = express();
 
-const appOrigins = [
-    "http://localhost:3000",
-    "https://goal-planner.pages.dev" // Example production URL
-];
-app.use(cors({ origin: appOrigins, credentials: true }));
-app.use(express.json());
+// =================================================================
+// SECTION 3: THE HONO APP AND ROUTES
+// This replaces the Express app.
+// =================================================================
+const app = new Hono();
 
 // Middleware
-const validateChatMessageRequest = (req, res, next) => { req.body.userMessage ? next() : res.status(400).json({ detail: "userMessage is required" }); };
-const validateGeneratePlanRequest = (req, res, next) => { (req.body.goal && req.body.durationDays && req.body.startDate) ? next() : res.status(400).json({ detail: "goal, durationDays, and startDate are required" }); };
-const validateIntegratePlanRequest = (req, res, next) => { (req.body.skillName && req.body.structuredTasks) ? next() : res.status(400).json({ detail: "skillName and structuredTasks are required" }); };
-const handleServiceError = (error, res) => {
+const appOrigins = [
+    "http://localhost:3000",
+    "https://goal-planner.pages.dev" // Replace with your actual deployed URL
+];
+app.use('*', cors({ origin: appOrigins }));
+
+const handleServiceError = (error, c) => {
     console.error(`Service error: ${error}`);
-    if (error.name === 'PermissionError') return res.status(401).json({ detail: error.message });
-    return res.status(500).json({ detail: error.message });
+    if (error.name === 'PermissionError') {
+        return c.json({ detail: error.message }, 401);
+    }
+    return c.json({ detail: error.message }, 500);
 };
 
-// API Routes
-app.post('/api/chat-message', validateChatMessageRequest, async (req, res) => {
+// API Routes rewritten for Hono
+app.post('/api/chat-message', async (c) => {
     try {
-        const planner = new LearningPlannerService(req.env.GOOGLE_API_KEY);
-        const { userMessage, chatHistory = [] } = req.body;
+        const planner = new LearningPlannerService(c.env.GOOGLE_API_KEY);
+        const { userMessage, chatHistory = [] } = await c.req.json();
+        if (!userMessage) return c.json({ detail: "userMessage is required" }, 400);
+        
         const aiResponseText = await planner.handleChatMessage(userMessage, chatHistory);
-        res.json({ aiResponse: aiResponseText });
+        return c.json({ aiResponse: aiResponseText });
     } catch (error) {
-        handleServiceError(error, res);
+        return handleServiceError(error, c);
     }
 });
 
-app.post('/api/generate-plan', validateGeneratePlanRequest, async (req, res) => {
+app.post('/api/generate-plan', async (c) => {
     try {
-        const planner = new LearningPlannerService(req.env.GOOGLE_API_KEY);
+        const planner = new LearningPlannerService(c.env.GOOGLE_API_KEY);
+        const body = await c.req.json();
+        const { goal, durationDays, startDate } = body;
+        if (!goal || !durationDays || !startDate) {
+            return c.json({ detail: "goal, durationDays, and startDate are required" }, 400);
+        }
+
         const [structuredTasks, humanReadablePlan] = await planner.generateStructuredPlan({
-            ...req.body,
-            startDateStr: req.body.startDate,
+            ...body,
+            startDateStr: startDate,
         });
-        if (!structuredTasks) return res.status(422).json({ detail: humanReadablePlan });
-        res.json({ humanReadablePlan, structuredTasks });
+        
+        if (!structuredTasks) return c.json({ detail: humanReadablePlan }, 422);
+        return c.json({ humanReadablePlan, structuredTasks });
     } catch (error) {
-        handleServiceError(error, res);
+        return handleServiceError(error, c);
     }
 });
 
-app.post('/api/integrate-plan', validateIntegratePlanRequest, async (req, res) => {
+app.post('/api/integrate-plan', async (c) => {
     try {
-        const planner = new LearningPlannerService(req.env.GOOGLE_API_KEY);
-        const authHeader = req.headers.authorization;
+        const planner = new LearningPlannerService(c.env.GOOGLE_API_KEY);
+        const authHeader = c.req.header('authorization');
         if (!authHeader || !authHeader.startsWith('Bearer ')) {
-            return res.status(401).json({ detail: "Authorization header is missing or invalid" });
+            return c.json({ detail: "Authorization header is missing or invalid" }, 401);
         }
         const accessToken = authHeader.split(' ')[1];
-        const { skillName, structuredTasks } = req.body;
+        
+        const { skillName, structuredTasks } = await c.req.json();
+        if (!skillName || !structuredTasks) {
+            return c.json({ detail: "skillName and structuredTasks are required" }, 400);
+        }
+
         const [message, eventLinks] = await planner.addPlanToCalendar(skillName, structuredTasks, accessToken);
-        if (!eventLinks) return res.status(400).json({ detail: message });
-        res.json({ message, calendarEventLinks: eventLinks });
+        
+        if (!eventLinks) return c.json({ detail: message }, 400);
+        return c.json({ message, calendarEventLinks: eventLinks });
     } catch (error) {
-        handleServiceError(error, res);
+        return handleServiceError(error, c);
     }
 });
 
-app.get('/api', (req, res) => {
-    res.json({ message: "Learning Planner API is running!" });
+app.get('/api', (c) => {
+    return c.json({ message: "Learning Planner API is running!" });
 });
+
 
 // =================================================================
 // SECTION 4: THE CLOUDFLARE HANDLER
-// This is the entry point that connects Cloudflare to your Express app.
+// Hono apps can be exported directly for serverless environments.
 // =================================================================
-export const onRequest = (context) => {
-    // Inject environment variables from Cloudflare into the request object
-    // so our Express handlers can access them.
-    context.request.env = context.env;
-    return app(context.request);
-};
+export const onRequest = app.fetch;
