@@ -1,0 +1,203 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+
+    --primary: 139 84% 78%;
+    --primary-foreground: 0 0% 0%;
+
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+
+    --accent: 204 94% 94%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 139 84% 78%;
+
+    --radius: 0.75rem;
+
+    /* Custom colorful theme variables */
+    --purple: 147 50% 47%;
+    --blue: 213 94% 68%;
+    --green: 142 76% 36%;
+    --orange: 25 95% 53%;
+    --pink: 330 81% 60%;
+    --yellow: 48 96% 53%;
+    --red: 0 84% 60%;
+    --teal: 173 80% 40%;
+    --indigo: 239 84% 67%;
+  }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 139 84% 78%;
+    --primary-foreground: 0 0% 0%;
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 204 94% 94%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 139 84% 78%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-slate-50 text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+    min-height: 100vh;
+  }
+}
+
+@layer components {
+  .card-colorful {
+    @apply bg-white border border-slate-200 shadow-sm;
+  }
+
+  .card-colorful {
+   @apply bg-gradient-to-br from-white to-slate-50 border border-slate-200;
+  }
+
+  .card-hover {
+    @apply hover:shadow-md transition-shadow duration-200;
+  }
+
+  .card-hover {
+    @apply transition-all duration-300 hover:shadow-md hover:-translate-y-0.5;
+  }
+
+  .priority-high {
+    @apply border-l-4 border-l-red-400 bg-red-50;
+  }
+
+  .priority-medium {
+    @apply border-l-4 border-l-yellow-400 bg-yellow-50;
+  }
+
+  .priority-low {
+    @apply border-l-4 border-l-green-400 bg-green-50;
+  }
+
+  .btn-purple {
+    @apply bg-purple-500 hover:bg-purple-600 text-white;
+  }
+
+  .btn-blue {
+    @apply bg-blue-500 hover:bg-blue-600 text-white;
+  }
+
+  .btn-green {
+    @apply bg-green-500 hover:bg-green-600 text-white;
+  }
+
+  .btn-orange {
+    @apply bg-orange-500 hover:bg-orange-600 text-white;
+  }
+
+  .btn-pink {
+    @apply bg-pink-500 hover:bg-pink-600 text-white;
+  }
+
+  .btn-yellow {
+    @apply bg-yellow-500 hover:bg-yellow-600 text-white;
+  }
+
+  .btn-red {
+    @apply bg-red-500 hover:bg-red-600 text-white;
+  }
+
+  .btn-teal {
+    @apply bg-teal-500 hover:bg-teal-600 text-white;
+  }
+
+  .btn-indigo {
+    @apply bg-indigo-500 hover:bg-indigo-600 text-white;
+  }
+
+  .btn-green {
+    @apply bg-green-500 text-white hover:bg-green-600 transition-colors duration-200;
+  }
+
+  .btn-orange {
+    @apply bg-orange-500 text-white hover:bg-orange-600 transition-colors duration-200;
+  }
+
+  .text-purple {
+    @apply text-purple-600;
+  }
+
+  .text-blue {
+    @apply text-blue-600;
+  }
+
+  .text-green {
+    @apply text-green-600;
+  }
+
+  .text-orange {
+    @apply text-orange-600;
+  }
+
+  .text-pink {
+    @apply text-pink-600;
+  }
+
+  .bg-purple-light {
+    @apply bg-purple-100;
+  }
+
+  .bg-blue-light {
+    @apply bg-blue-100;
+  }
+
+  .bg-green-light {
+    @apply bg-green-100;
+  }
+
+  .bg-orange-light {
+    @apply bg-orange-100;
+  }
+
+  .bg-pink-light {
+    @apply bg-pink-100;
+  }
+
+  .theme-card {
+    @apply border-2 border-transparent hover:border-purple-300 transition-all duration-200 cursor-pointer;
+  }
+
+  .theme-card.selected {
+    @apply border-purple-500 ring-2 ring-purple-200;
+  }
+}
