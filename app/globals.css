@@ -201,3 +201,21 @@
     @apply border-purple-500 ring-2 ring-purple-200;
   }
 }
+
+.animated-gradient {
+  background: linear-gradient(-45deg, #6b21a8, #4f46e5, #1d4ed8, #0e7490);
+  background-size: 400% 400%;
+  animation: gradient 15s ease infinite;
+}
+
+@keyframes gradient {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
