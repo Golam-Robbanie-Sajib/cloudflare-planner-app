@@ -1,12 +1,4 @@
-<<<<<<<< HEAD:app/api/[[...path]]/route.js
 // app/api/[[...path]]/route.js
-========
-// functions/api/[[...path]].js
-import { Hono } from 'hono';
-import { handle } from 'hono/cloudflare-pages';
-import { cors } from 'hono/cors';
-import { trimTrailingSlash } from 'hono/trailing-slash';
->>>>>>>> 709de1e1b344bd24899694c918b765405adcfb9e:app/api/[[...path]].js
 
 import { Hono } from 'hono';
 import { handle } from 'hono/vercel';
@@ -120,14 +112,9 @@ class LearningPlannerService {
     }
 }
 
-<<<<<<<< HEAD:app/api/[[...path]]/route.js
 
 // Hono app setup
 const app = new Hono().basePath('/api');
-========
-// Hono app setup for Cloudflare Pages
-const app = new Hono();
->>>>>>>> 709de1e1b344bd24899694c918b765405adcfb9e:app/api/[[...path]].js
 app.use('*', trimTrailingSlash()); 
 
 // CORS configuration
@@ -136,7 +123,6 @@ const appOrigins = [
     'https://cloudflare-planner-app.pages.dev' // Add your production URL here
 ];
 app.use('*', cors({ 
-<<<<<<<< HEAD:app/api/[[...path]]/route.js
     origin: (origin) => {
         // Allow requests from your specified origins
         if (appOrigins.includes(origin)) {
@@ -146,9 +132,6 @@ app.use('*', cors({
         // for example, deny them by returning one of your allowed origins or null.
         return appOrigins[0];
     },
-========
-    origin: appOrigins,
->>>>>>>> 709de1e1b344bd24899694c918b765405adcfb9e:app/api/[[...path]].js
     methods: ['GET', 'POST', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization']
  }));
