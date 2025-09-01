@@ -15,9 +15,11 @@ export default function MainDashboard() {
   const isMobile = useIsMobile();
 
   return (
-    <div className="flex flex-1 flex-col md:flex-row">
+    // STEP 1: Set a fixed height on the main container and remove md:flex-row
+    <div className="flex flex-1">
       {/* Left Section */}
-      <div className="w-full md:w-[70%] border-r border-slate-200 p-6 flex flex-col overflow-auto">
+      {/* STEP 2: Make this column independently scrollable */}
+      <div className="w-full md:w-[70%] border-r border-slate-200 p-6 overflow-y-auto h-[calc(100vh-4rem)]">
         <Tabs defaultValue="daily" className="w-full">
           <TabsList className="grid w-full grid-cols-3 bg-slate-100 p-1 rounded-xl">
             <TabsTrigger value="daily" className="data-[state=active]:bg-purple-500 data-[state=active]:text-white rounded-lg font-medium">Daily</TabsTrigger>
@@ -35,7 +37,8 @@ export default function MainDashboard() {
       {isMobile ? (
         <MobileChatDrawer />
       ) : (
-        <div className="w-full md:w-[30%] p-6 bg-blue-50">
+        // STEP 3: This column will now fill the height but not scroll
+        <div className="hidden md:flex md:w-[30%] p-6 bg-blue-50 flex-col">
           <ChatInterface />
         </div>
       )}
