@@ -1,7 +1,8 @@
-// functions/api/[[...path]]/[[path]].js
+// functions/api/[[...path]].js
 import { Hono } from 'hono';
 import { handle } from 'hono/cloudflare-pages';
 import { cors } from 'hono/cors';
+import { trimTrailingSlash } from 'hono/trailing-slash';
 
 // Your existing LearningPlannerService class (unchanged)
 const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
@@ -106,14 +107,19 @@ class LearningPlannerService {
 }
 
 // Hono app setup for Cloudflare Pages
-const app = new Hono().basePath('/api');
+const app = new Hono();
+app.use('*', trimTrailingSlash()); 
 
 // CORS configuration
 const appOrigins = [ 
     'http://localhost:3000', 
     'https://cloudflare-planner-app.pages.dev'
 ];
-app.use('*', cors({ origin: appOrigins }));
+app.use('*', cors({ 
+    origin: appOrigins,
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+ }));
 
 const handleServiceError = (error, c) => {
     console.error(`Service error: ${error}`);
