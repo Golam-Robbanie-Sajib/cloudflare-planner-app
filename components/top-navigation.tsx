@@ -4,6 +4,7 @@
 
 import { Settings, Calendar, MessageSquare } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { useRouter } from "next/navigation";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import {
   DropdownMenu,
@@ -19,16 +20,21 @@ import { useAuth } from "@/lib/auth-context"
 
 export default function TopNavigation() {
   const { isAuthenticated, userInfo, signOut } = useAuth()
+  const router = useRouter();
+  const handleSignOut = async () => {
+  await signOut(); // Wait for the sign out process to complete
+  router.push('/');  // Redirect to the homepage
+};
 
   return (
     <div className="h-16 border-b border-slate-200 flex items-center justify-between px-6 bg-white shadow-sm">
       <div className="flex items-center">
-        <div className="flex items-center space-x-3">
+        <Link href="/" className="flex items-center space-x-3">
           <div className="w-8 h-8 rounded-lg bg-purple-500 flex items-center justify-center">
             <span className="text-white font-bold text-sm">T</span>
           </div>
           <h1 className="hidden sm:block text-2xl font-bold text-purple-600">TaskFlow</h1>
-        </div>
+        </Link>
       </div>
 
       <div className="flex items-center space-x-3">
@@ -82,7 +88,7 @@ export default function TopNavigation() {
                 <DropdownMenuItem className="hover:bg-blue-50 cursor-pointer">Settings</DropdownMenuItem>
               </Link>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => signOut()} className="hover:bg-red-50 text-red-600 cursor-pointer">
+              <DropdownMenuItem onClick={handleSignOut} className="hover:bg-red-50 text-red-600 cursor-pointer">
                 Log out
               </DropdownMenuItem>
             </DropdownMenuContent>
