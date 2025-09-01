@@ -3,6 +3,7 @@
 "use client"
 
 import type React from "react"
+import { useIsMobile } from "@/hooks/use-mobile";
 import { useState, useRef, useEffect } from "react"
 import { Send, CalendarIcon, Bot, User, Plus, Loader2, RefreshCw } from "lucide-react"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
@@ -24,7 +25,7 @@ import { useCalendarStore } from "@/lib/calendar-store"
 import { Textarea } from "@/components/ui/textarea"
 import { useAuth } from "@/lib/auth-context"
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL;
 
 // --- Type Definitions for API Interaction ---
 
@@ -85,6 +86,7 @@ interface FrontendMessage {
 export default function ChatInterface() {
   const { addAIGeneratedTasks, loading } = useCalendarStore();
   const { isAuthenticated, getAccessToken } = useAuth();
+  const isMobile = useIsMobile();
 
   const [messages, setMessages] = useState<FrontendMessage[]>([
     {
@@ -95,7 +97,7 @@ export default function ChatInterface() {
     },
   ]);
   const [chatInput, setChatInput] = useState("");
-
+  
   const [currentGeneratedPlan, setCurrentGeneratedPlan] = useState<UIPlan | null>(null);
   const [isPlanDialogOpen, setIsPlanDialogOpen] = useState(false);
   const [refinementInput, setRefinementInput] = useState("");
@@ -130,7 +132,7 @@ export default function ChatInterface() {
       id: `task-${index}-${Date.now()}`,
       title: task.summary,
       description: task.description || null,
-      date: startDate.toISOString().split("T")[0],
+      date: task.startTime.split('T')[0],
       startTime: startDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
       endTime: new Date(task.endTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
       priority: "medium",
@@ -414,6 +416,9 @@ export default function ChatInterface() {
   };
 
   const renderPlanGenerationButton = () => {
+     if (isMobile) {
+      return null;
+    }
     const isReadyForInitialPlan = planRequestParams.goal && planRequestParams.durationDays && planRequestParams.startDate;
     const buttonText = currentGeneratedPlan ? "Refine Current Plan" : (isReadyForInitialPlan ? "Generate Plan" : "Generate Plan (needs details)");
 
@@ -452,7 +457,7 @@ export default function ChatInterface() {
 
   return (
     <>
-      <Card className="h-[calc(100vh-5rem)] flex flex-col card-colorful card-hover shadow-lg">
+      <Card className="h-full flex flex-col card-colorful card-hover shadow-lg">
         <CardHeader className="px-4 py-3 border-b border-slate-200 flex justify-between items-center">
           <CardTitle className="text-lg font-bold flex items-center gap-3">
             <div className="w-8 h-8 rounded-lg bg-green-500 flex items-center justify-center">

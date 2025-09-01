@@ -7,7 +7,7 @@ import ChatInterface from "@/components/chat-interface";
 import UpcomingEvents from "@/components/upcoming-events";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { Drawer, DrawerContent, DrawerTrigger } from "@/components/ui/drawer";
+import { Drawer, DrawerContent, DrawerTitle, DrawerDescription, DrawerTrigger } from "@/components/ui/drawer";
 import { Button } from "@/components/ui/button";
 import { MessageSquarePlus } from "lucide-react";
 
@@ -51,8 +51,15 @@ function MobileChatDrawer() {
           <MessageSquarePlus className="h-8 w-8 text-white" />
         </Button>
       </DrawerTrigger>
-      <DrawerContent className="h-[85vh] bg-blue-50">
-        <div className="p-4 h-full">
+      <DrawerContent className="h-[85vh] bg-blue-50 flex flex-col">
+        <DrawerTitle className="sr-only">AI Assistant Chat</DrawerTitle>
+        <DrawerDescription className="sr-only">
+          A chat interface to create and manage learning plans with an AI assistant.
+        </DrawerDescription>
+        <div className="p-4 bg-blue-50 flex-shrink-0">
+          <div className="mx-auto w-12 h-1.5 flex-shrink-0 rounded-full bg-blue-200" />
+        </div>
+        <div className="flex-1 overflow-hidden p-4 pt-0">
           <ChatInterface />
         </div>
       </DrawerContent>
