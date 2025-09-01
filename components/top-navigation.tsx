@@ -31,9 +31,9 @@ export default function TopNavigation() {
       <div className="flex items-center">
         <Link href="/" className="flex items-center space-x-3">
           <div className="w-8 h-8 rounded-lg bg-purple-500 flex items-center justify-center">
-            <span className="text-white font-bold text-sm">T</span>
+            <span className="text-white font-bold text-sm">P</span>
           </div>
-          <h1 className="hidden sm:block text-2xl font-bold text-purple-600">TaskFlow</h1>
+          <h1 className="hidden sm:block text-2xl font-bold text-purple-600">PLANNER</h1>
         </Link>
       </div>
 
