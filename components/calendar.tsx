@@ -622,7 +622,7 @@ const handleSyncTask = async (task: CalendarTask) => {
                 const isCurrentMonth = currentDate.getMonth() === date.getMonth()
                 const isToday = format(currentDate, "yyyy-MM-dd") === format(new Date(), "yyyy-MM-dd")
 
-                const dayDateString = currentDate.toISOString().split("T")[0]
+                const dayDateString = format(currentDate, "yyyy-MM-dd")
                 const dayTasks = getTasksForDateString(dayDateString)
 
                 return (
