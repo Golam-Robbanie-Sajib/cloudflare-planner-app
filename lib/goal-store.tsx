@@ -14,7 +14,7 @@ import {
 interface GoalStore {
   goals: UserGoal[];
   loading: boolean;
-  addGoal: (goalData: Omit<UserGoal, "id" | "createdAt" | "updatedAt">) => Promise<void>;
+  addGoal: (goalData: Omit<UserGoal, "id" | "createdAt" | "updatedAt">) => Promise<string | null>;
   updateGoal: (id: string, updates: Partial<UserGoal>) => Promise<void>;
   deleteGoal: (id: string) => Promise<void>;
 }
@@ -43,8 +43,9 @@ export function GoalProvider({ children }: { children: ReactNode }) {
   }, [isAuthenticated, userInfo?.email]);
 
   const addGoal = async (goalData: Omit<UserGoal, "id" | "createdAt" | "updatedAt">) => {
-    if (!userInfo?.email) return;
-    await addGoalToFirestore(userInfo.email, goalData);
+    if (!userInfo?.email) return null;
+    const newGoalRef = await addGoalToFirestore(userInfo.email, goalData);
+    return newGoalRef.id;
   };
 
   const updateGoal = async (id: string, updates: Partial<UserGoal>) => {
