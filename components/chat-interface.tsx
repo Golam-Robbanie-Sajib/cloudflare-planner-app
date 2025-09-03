@@ -1,11 +1,11 @@
-//components/chat-interface.tsx
+// components/chat-interface.tsx
 
 "use client"
 
 import type React from "react"
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useState, useRef, useEffect } from "react"
-import { Send, CalendarIcon, Bot, User, Plus, Loader2, RefreshCw } from "lucide-react"
+import { Send, CalendarIcon, Bot, User, Plus, Loader2, RefreshCw, Edit } from "lucide-react"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -24,6 +24,9 @@ import { toast } from "@/components/ui/use-toast"
 import { useCalendarStore } from "@/lib/calendar-store"
 import { Textarea } from "@/components/ui/textarea"
 import { useAuth } from "@/lib/auth-context"
+import { useGoalStore } from "@/lib/goal-store";
+import GoogleAuthButton from "@/components/google-auth-button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL;
 
@@ -81,13 +84,19 @@ interface FrontendMessage {
   text: string;
   role: "user" | "ai";
   timestamp: Date;
+  suggestedGoal?: { 
+    title: string;
+    isCreated: boolean;
+    isEditing: boolean 
+  }
 }
 
 export default function ChatInterface() {
-  const { addAIGeneratedTasks, loading } = useCalendarStore();
+  const { addAIGeneratedTasks } = useCalendarStore();
   const { isAuthenticated, getAccessToken } = useAuth();
+  const { goals, addGoal } = useGoalStore();
   const isMobile = useIsMobile();
-
+ 
   const [messages, setMessages] = useState<FrontendMessage[]>([
     {
       id: "1",
@@ -97,7 +106,8 @@ export default function ChatInterface() {
     },
   ]);
   const [chatInput, setChatInput] = useState("");
-  
+  const [editedGoalTitle, setEditedGoalTitle] = useState("");
+
   const [currentGeneratedPlan, setCurrentGeneratedPlan] = useState<UIPlan | null>(null);
   const [isPlanDialogOpen, setIsPlanDialogOpen] = useState(false);
   const [refinementInput, setRefinementInput] = useState("");
@@ -107,6 +117,7 @@ export default function ChatInterface() {
   const [isIntegratingPlan, setIsIntegratingPlan] = useState(false);
 
   const [planRequestParams, setPlanRequestParams] = useState<Partial<GeneratePlanRequestPayload>>({});
+  const [selectedGoalId, setSelectedGoalId] = useState("none");
 
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
@@ -118,6 +129,21 @@ export default function ChatInterface() {
       }
     }
   }, [messages]);
+
+   useEffect(() => {
+    const lastCreatedGoal = messages
+      .map(m => m.suggestedGoal)
+      .find(g => g?.isCreated);
+    
+    if (lastCreatedGoal) {
+      const matchingGoal = goals.find(g => g.title === lastCreatedGoal.title);
+      if (matchingGoal) {
+        setSelectedGoalId(matchingGoal.id);
+      }
+    }
+  }, [goals, messages, setSelectedGoalId]);
+
+  
 
   const mapMessagesToBackendHistory = (msgs: FrontendMessage[]): BackendGeminiContent[] => {
     return msgs.map(m => ({
@@ -141,14 +167,14 @@ export default function ChatInterface() {
   };
 
   const parsePlanParamsFromMessage = (message: string): Partial<GeneratePlanRequestPayload> => {
-    const params: Partial<GeneratePlanRequestPayload> = {};
+  const params: Partial<GeneratePlanRequestPayload> = {};
 
-    const goalMatch = message.match(/(learn|master|understand)\s+([a-zA-Z0-9\s]+?)(?:\s+in\s+(\d+)\s+days|\s+starting|\s*$)/i);
-    if (goalMatch && goalMatch[2]) {
+  const goalMatch = message.match(/(learn|master|understand)\s+([a-zA-Z0-9\s]+?)(?:\s+in\s+(\d+)\s+days|\s+starting|\s*$)/i);
+  if (goalMatch && goalMatch[2]) {
       params.goal = goalMatch[2].trim();
     }
 
-    const durationMatch = message.match(/(\d+)\s+(day|week|month)s?/i);
+  const durationMatch = message.match(/(\d+)\s+(day|week|month)s?/i);
     if (durationMatch && durationMatch[1] && durationMatch[2]) {
       let duration = parseInt(durationMatch[1], 10);
       if (durationMatch[2].toLowerCase().startsWith("week")) {
@@ -159,11 +185,11 @@ export default function ChatInterface() {
       params.durationDays = duration;
     }
 
-    const today = new Date();
-    const tomorrow = new Date(today);
+  const today = new Date();
+  const tomorrow = new Date(today);
     tomorrow.setDate(today.getDate() + 1);
 
-    const startDateMatch = message.match(/(starting|start)\s+(tomorrow|today|next week|next monday|(\d{4}-\d{2}-\d{2}))/i);
+  const startDateMatch = message.match(/(starting|start)\s+(tomorrow|today|next week|next monday|(\d{4}-\d{2}-\d{2}))/i);
     if (startDateMatch) {
       const dateStr = startDateMatch[2].toLowerCase();
       if (dateStr === "tomorrow") {
@@ -181,13 +207,11 @@ export default function ChatInterface() {
         params.startDate = tomorrow.toISOString().split("T")[0];
     }
     
-
-    const dailyHoursMatch = message.match(/(\d+(\.\d+)?)\s+hours?\s+daily/i);
+  const dailyHoursMatch = message.match(/(\d+(\.\d+)?)\s+hours?\s+daily/i);
     if (dailyHoursMatch && dailyHoursMatch[1]) {
       params.dailyHours = parseFloat(dailyHoursMatch[1]);
     }
 
-    // Only set state for new plan generation, not for parsing refinements
     if (!message.startsWith("make it for")) {
         setPlanRequestParams(prev => ({ ...prev, ...params }));
     }
@@ -195,15 +219,31 @@ export default function ChatInterface() {
     return params;
   };
 
+  const handleToggleEditGoal = (messageId: string, currentTitle: string) => {
+    setMessages(prev => prev.map(msg => {
+      if(msg.id===messageId && msg.suggestedGoal) {
+        setEditedGoalTitle(currentTitle);
+        return { ...msg, suggestedGoal: { ...msg.suggestedGoal, isEditing: !msg.suggestedGoal.isEditing } };
+      }
+      return msg;
+    }));
+
+  };
+
+  const handleSaveEditedGoal = (messageId: string) => {
+  // Find the message and update its title, then turn off editing mode
+  setMessages(prev => prev.map(msg => {
+    if (msg.id === messageId && msg.suggestedGoal) {
+      return { ...msg, suggestedGoal: { ...msg.suggestedGoal, title: editedGoalTitle, isEditing: false } };
+    }
+    return msg;
+  }));
+};
+
   const handleSendMessage = async () => {
     if (!chatInput.trim() || isChatting) return;
 
-    const newUserMessage: FrontendMessage = {
-      id: Date.now().toString(),
-      text: chatInput,
-      role: "user",
-      timestamp: new Date(),
-    };
+    const newUserMessage: FrontendMessage = { id: Date.now().toString(), text: chatInput, role: "user", timestamp: new Date() };
     setMessages(prev => [...prev, newUserMessage]);
     const currentInput = chatInput;
     setChatInput("");
@@ -214,13 +254,13 @@ export default function ChatInterface() {
     const backendChatHistory = mapMessagesToBackendHistory([...messages, newUserMessage]);
 
     try {
+      const accessToken = getAccessToken();
+      if (!accessToken) throw new Error("Authentication failed. Please sign in again.");
+
       const response = await fetch(`${API_BASE_URL}/chat-message`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userMessage: currentInput,
-          chatHistory: backendChatHistory.slice(0, -1)
-        }),
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ userMessage: currentInput, chatHistory: backendChatHistory.slice(0, -1) }),
       });
 
       if (!response.ok) {
@@ -228,96 +268,110 @@ export default function ChatInterface() {
         throw new Error(errorData.detail || "Failed to get response from AI");
       }
 
-      const data: { aiResponse: string } = await response.json();
-      const aiResponseMessage: FrontendMessage = {
-        id: (Date.now() + 1).toString(),
-        text: data.aiResponse,
-        role: "ai",
-        timestamp: new Date(),
-      };
-      setMessages(prev => [...prev, aiResponseMessage]);
+      const data: { intent: string; goalTitle: string | null; response: string } = await response.json();
+      const aiResponseMessage: FrontendMessage = { id: (Date.now() + 1).toString(), text: data.response, role: "ai", timestamp: new Date() };
 
-      if (data.aiResponse.toLowerCase().includes("ready to generate") || data.aiResponse.toLowerCase().includes("shall i create the plan")) {
-        toast({ title: "AI is ready to plan!", description: "You can now click 'Generate/Refine Plan' or refine your request." });
+      if (data.intent === "create_goal" && data.goalTitle) {
+        aiResponseMessage.suggestedGoal={ title: data.goalTitle, isCreated: false, isEditing: false };
       }
+      setMessages(prev => [...prev, aiResponseMessage]);
 
     } catch (error) {
       console.error("Chat API error:", error);
       toast({ title: "Error", description: (error as Error).message, variant: "destructive" });
-      const errorResponseMessage: FrontendMessage = {
-        id: (Date.now() + 1).toString(),
-        text: `Sorry, I encountered an error: ${(error as Error).message}`,
-        role: "ai",
-        timestamp: new Date(),
-      };
+      const errorResponseMessage: FrontendMessage = { id: (Date.now() + 1).toString(), text: `Sorry, I encountered an error: ${(error as Error).message}`, role: "ai", timestamp: new Date() };
       setMessages(prev => [...prev, errorResponseMessage]);
     } finally {
       setIsChatting(false);
     }
   };
 
-  // MODIFIED: This function now accepts an optional payload, making it usable for both new plans and refinements.
-  const handleRequestPlanGeneration = async (directPayload?: GeneratePlanRequestPayload) => {
-     const payload: GeneratePlanRequestPayload = directPayload || {
-    goal: planRequestParams.goal || "Learning Goal",
-    durationDays: planRequestParams.durationDays || 7,
-    startDate: planRequestParams.startDate || new Date(Date.now() + 86400000).toISOString().split("T")[0],
-    dailyHours: planRequestParams.dailyHours || 2,
-    learningStyle: planRequestParams.learningStyle,
-    preferredTime: planRequestParams.preferredTime,
-    chatHistoryForContext: mapMessagesToBackendHistory(messages),
-  };
-
-  if (!payload.goal || !payload.durationDays || !payload.startDate) {
-    toast({ title: "Missing Details", description: "Please specify a goal, duration (in days), and start date for the plan.", variant: "destructive" });
-    return;
-  }
-
-  setIsGeneratingPlan(true);
-  if (!directPayload) setCurrentGeneratedPlan(null);
-
+  const handleCreateGoal = async (goalTitle: string, messageId: string) => {
   try {
-    const response = await fetch(`${API_BASE_URL}/generate-plan`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+    await addGoal({
+      title: goalTitle,
+      description: "Generated by AI from chat.",
+      status: "not_started",
     });
 
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.detail || "Failed to generate plan");
-    }
+    toast({
+      title: "Goal Created!",
+      description: `"${goalTitle}" has been added to your goals.`,
+    });
 
-    const data: { humanReadablePlan: string; structuredTasks: BackendTask[] } = await response.json();
-
-    const newUIPlan: UIPlan = {
-      title: payload.goal,
-      description: `A plan to ${payload.goal} over ${payload.durationDays} days starting ${payload.startDate}.`,
-      tasks: data.structuredTasks.map(mapBackendTaskToUITask),
-      humanReadablePlan: data.humanReadablePlan,
-      originalBackendTasks: data.structuredTasks,
-      originalRequestParams: payload,
-    };
-    setCurrentGeneratedPlan(newUIPlan);
-
-    const planIntroMessage: FrontendMessage = {
-      id: (Date.now() + 10).toString(),
-      text: `Okay, I've ${directPayload ? 'refined the' : 'generated a'} plan for you to "${payload.goal}". You can review it now!`,
-      role: "ai",
-      timestamp: new Date(),
-    };
-    setMessages(prev => [...prev, planIntroMessage]);
-
-    setTimeout(() => setIsPlanDialogOpen(true), 300);
-    toast({ title: `Plan ${directPayload ? 'Refined' : 'Generated'}!`, description: "Your new learning plan is ready." });
+    // Update the message to disable the button
+    setMessages(prevMessages => prevMessages.map(msg => {
+      if (msg.id === messageId && msg.suggestedGoal) {
+        return { ...msg, suggestedGoal: { ...msg.suggestedGoal, isCreated: true } };
+      }
+      return msg;
+    }));
 
   } catch (error) {
-    console.error("Generate Plan API error:", error);
-    toast({ title: "Error Generating Plan", description: (error as Error).message, variant: "destructive" });
-  } finally {
-    setIsGeneratingPlan(false);
-    setRefinementInput("");
+    console.error("Error creating goal:", error);
+    toast({ title: "Error", description: "Failed to create the goal.", variant: "destructive" });
   }
+};
+
+  const handleRequestPlanGeneration = async (directPayload?: GeneratePlanRequestPayload) => {
+     const payload: GeneratePlanRequestPayload = directPayload || {
+      goal: planRequestParams.goal || "Learning Goal",
+      durationDays: planRequestParams.durationDays || 7,
+      startDate: planRequestParams.startDate || new Date(Date.now() + 86400000).toISOString().split("T")[0],
+      dailyHours: planRequestParams.dailyHours || 2,
+      learningStyle: planRequestParams.learningStyle,
+      preferredTime: planRequestParams.preferredTime,
+      chatHistoryForContext: mapMessagesToBackendHistory(messages),
+    };
+
+    if (!payload.goal || !payload.durationDays || !payload.startDate) {
+      toast({ title: "Missing Details", description: "Please specify a goal, duration (in days), and start date for the plan.", variant: "destructive" });
+      return;
+    }
+
+    setIsGeneratingPlan(true);
+    if (!directPayload) setCurrentGeneratedPlan(null);
+
+    try {
+      const accessToken = getAccessToken();
+      if (!accessToken) throw new Error("Authentication failed. Please sign in again.");
+      
+      const response = await fetch(`${API_BASE_URL}/generate-plan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || "Failed to generate plan");
+      }
+
+      const data: { humanReadablePlan: string; structuredTasks: BackendTask[] } = await response.json();
+
+      const newUIPlan: UIPlan = {
+        title: payload.goal,
+        description: `A plan to ${payload.goal} over ${payload.durationDays} days starting ${payload.startDate}.`,
+        tasks: data.structuredTasks.map(mapBackendTaskToUITask),
+        humanReadablePlan: data.humanReadablePlan,
+        originalBackendTasks: data.structuredTasks,
+        originalRequestParams: payload,
+      };
+      setCurrentGeneratedPlan(newUIPlan);
+
+      const planIntroMessage: FrontendMessage = { id: (Date.now() + 10).toString(), text: `Okay, I've ${directPayload ? 'refined the' : 'generated a'} plan for you to "${payload.goal}". You can review it now!`, role: "ai", timestamp: new Date() };
+      setMessages(prev => [...prev, planIntroMessage]);
+
+      setTimeout(() => setIsPlanDialogOpen(true), 300);
+      toast({ title: `Plan ${directPayload ? 'Refined' : 'Generated'}!`, description: "Your new learning plan is ready." });
+
+    } catch (error) {
+      console.error("Generate Plan API error:", error);
+      toast({ title: "Error Generating Plan", description: (error as Error).message, variant: "destructive" });
+    } finally {
+      setIsGeneratingPlan(false);
+      setRefinementInput("");
+    }
   };
 
   const handleIntegratePlanToCalendar = async () => {
@@ -325,46 +379,13 @@ export default function ChatInterface() {
       toast({ title: "No Plan", description: "No plan to integrate.", variant: "destructive" });
       return;
     }
-
-    if (!isAuthenticated) {
-      toast({ title: "Authentication Required", description: "Please sign in with Google first to integrate the plan.", variant: "destructive" });
-      return;
-    }
-
-    const accessToken = getAccessToken();
-    if (!accessToken) {
-      toast({ title: "Authentication Error", description: "Access token not found. Please try signing in again.", variant: "destructive" });
-      return;
-    }
-
+    
     setIsIntegratingPlan(true);
     try {
-      const payload = {
-        skillName: currentGeneratedPlan.title,
-        structuredTasks: currentGeneratedPlan.originalBackendTasks,
-      };
+      const goalIdToPass = selectedGoalId === "none" ? undefined : selectedGoalId;
+      await addAIGeneratedTasks(currentGeneratedPlan.originalBackendTasks, goalIdToPass);
 
-      const response = await fetch(`${API_BASE_URL}/integrate-plan`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${accessToken}`
-        },
-        body: JSON.stringify(payload),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        if (response.status === 401) {
-            throw new Error("Your session may have expired. Please sign out and sign in again.");
-        }
-        throw new Error(errorData.detail || "Failed to integrate plan to Google Calendar");
-      }
-
-      const data: { message: string; calendarEventLinks?: string[] } = await response.json();
-      toast({ title: "Plan Integrated!", description: data.message });
-
-      await addAIGeneratedTasks(currentGeneratedPlan.originalBackendTasks);
+      toast({ title: "Plan Integrated!", description: "Your plan has been added to the internal calendar." });
 
       setIsPlanDialogOpen(false);
       setCurrentGeneratedPlan(null);
@@ -376,7 +397,7 @@ export default function ChatInterface() {
       setIsIntegratingPlan(false);
     }
   };
-
+  
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -384,41 +405,37 @@ export default function ChatInterface() {
     }
   };
 
-  // MODIFIED: This function is now type-safe and handles all logic correctly.
   const handleRefinePlan = () => {
     if (!refinementInput.trim()) {
-    toast({ title: "Refinement Empty", description: "Please type your refinement instructions.", variant: "destructive" });
-    return;
-  }
+      toast({ title: "Refinement Empty", description: "Please type your refinement instructions.", variant: "destructive" });
+      return;
+    }
 
-  if (!currentGeneratedPlan?.originalRequestParams) {
-    toast({ title: "Cannot Refine Plan", description: "The original plan parameters are missing.", variant: "destructive" });
-    return;
-  }
-  
-  const originalParams = currentGeneratedPlan.originalRequestParams;
-  const refinementParams = parsePlanParamsFromMessage(refinementInput);
+    if (!currentGeneratedPlan?.originalRequestParams) {
+      toast({ title: "Cannot Refine Plan", description: "The original plan parameters are missing.", variant: "destructive" });
+      return;
+    }
+    
+    const originalParams = currentGeneratedPlan.originalRequestParams;
+    const refinementParams = parsePlanParamsFromMessage(refinementInput);
 
-  const refinementPayload: GeneratePlanRequestPayload = {
-    goal: originalParams.goal!,
-    durationDays: refinementParams.durationDays || originalParams.durationDays!,
-    startDate: refinementParams.startDate || originalParams.startDate!,
-    dailyHours: refinementParams.dailyHours || originalParams.dailyHours,
-    learningStyle: originalParams.learningStyle,
-    preferredTime: originalParams.preferredTime,
-    chatHistoryForContext: mapMessagesToBackendHistory(messages),
-    refinementInstruction: refinementInput,
-    existingPlanTasksForRefinement: currentGeneratedPlan.originalBackendTasks,
-  };
-  
-  handleRequestPlanGeneration(refinementPayload);
-  setIsPlanDialogOpen(false);
+    const refinementPayload: GeneratePlanRequestPayload = {
+      goal: originalParams.goal!,
+      durationDays: refinementParams.durationDays || originalParams.durationDays!,
+      startDate: refinementParams.startDate || originalParams.startDate!,
+      dailyHours: refinementParams.dailyHours || originalParams.dailyHours,
+      learningStyle: originalParams.learningStyle,
+      preferredTime: originalParams.preferredTime,
+      chatHistoryForContext: mapMessagesToBackendHistory(messages),
+      refinementInstruction: refinementInput,
+      existingPlanTasksForRefinement: currentGeneratedPlan.originalBackendTasks,
+    };
+    
+    handleRequestPlanGeneration(refinementPayload);
+    setIsPlanDialogOpen(false);
   };
 
   const renderPlanGenerationButton = () => {
-     if (isMobile) {
-      return null;
-    }
     const isReadyForInitialPlan = planRequestParams.goal && planRequestParams.durationDays && planRequestParams.startDate;
     const buttonText = currentGeneratedPlan ? "Refine Current Plan" : (isReadyForInitialPlan ? "Generate Plan" : "Generate Plan (needs details)");
 
@@ -434,27 +451,31 @@ export default function ChatInterface() {
         disabled={isGeneratingPlan || isChatting || (!currentGeneratedPlan && !isReadyForInitialPlan)}
         variant="outline"
         size="sm"
-        className="m-2"
+        className="m-2 flex items-center"
       >
-        {isGeneratingPlan ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : (currentGeneratedPlan ? <RefreshCw className="mr-2 h-4 w-4" /> : <Plus className="mr-2 h-4 w-4" />)}
-        {buttonText}
+        {isGeneratingPlan ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : (currentGeneratedPlan ? <RefreshCw className="h-4 w-4" /> : <Plus className="h-4 w-4" />)}
+        <span className="hidden sm:inline ml-2">{buttonText}</span>
       </Button>
     );
   };
 
-  if (loading) {
+  // If the user is not logged in, show a prompt.
+  if (!isAuthenticated) {
     return (
-      <Card className="h-[calc(100vh-5rem)] flex flex-col card-colorful card-hover shadow-lg">
-        <CardContent className="flex-1 flex items-center justify-center">
-          <div className="text-center">
-            <Loader2 className="h-8 w-8 animate-spin mx-auto text-green-600" />
-            <p className="mt-2 text-sm text-muted-foreground">Loading chat...</p>
-          </div>
-        </CardContent>
+      <Card className="h-full flex flex-col items-center justify-center card-colorful card-hover shadow-lg text-center p-4">
+        <div className="w-12 h-12 rounded-lg bg-green-500 flex items-center justify-center mb-4">
+          <Bot className="h-6 w-6 text-white" />
+        </div>
+        <h3 className="text-lg font-semibold text-slate-700">AI Assistant</h3>
+        <p className="text-sm text-slate-500 mt-1">
+          Please sign in to start a conversation and generate your personalized learning plans.
+        </p>
+        <GoogleAuthButton className="mt-6" />
       </Card>
     );
   }
-
+  
+  // The main component return for authenticated users
   return (
     <>
       <Card className="h-full flex flex-col card-colorful card-hover shadow-lg">
@@ -490,6 +511,47 @@ export default function ChatInterface() {
                       }`}
                   >
                     <div className="whitespace-pre-wrap">{message.text}</div>
+                    {message.role === 'ai' && message.suggestedGoal && !message.suggestedGoal.isCreated && (
+  <div className="mt-3 pt-3 border-t border-slate-300/50 space-y-2">
+    {message.suggestedGoal.isEditing ? (
+      <>
+        <Input
+          value={editedGoalTitle}
+          onChange={(e) => setEditedGoalTitle(e.target.value)}
+          className="bg-white/80 border-slate-300 text-black h-8"
+        />
+        <div className="flex gap-2">
+          <Button size="sm" className="btn-green h-7" onClick={() => handleSaveEditedGoal(message.id)}>Save</Button>
+          <Button size="sm" variant="ghost" className="h-7 text-white" onClick={() => handleToggleEditGoal(message.id, message.suggestedGoal!.title)}>Cancel</Button>
+        </div>
+      </>
+    ) : (
+      <div className="flex items-center gap-2">
+        <Button
+          size="sm"
+          className="btn-green flex-grow"
+          onClick={() => handleCreateGoal(message.suggestedGoal!.title, message.id)}
+        >
+          Create Goal: "{message.suggestedGoal.title}"
+        </Button>
+        <Button
+          size="icon"
+          variant="ghost"
+          className="h-7 w-7 flex-shrink-0 text-white"
+          onClick={() => handleToggleEditGoal(message.id, message.suggestedGoal!.title)}
+        >
+          <Edit className="h-4 w-4" />
+        </Button>
+      </div>
+    )}
+  </div>
+)}
+{/* If goal IS created, show a confirmation */}
+{message.role === 'ai' && message.suggestedGoal?.isCreated && (
+    <div className="mt-3 pt-3 border-t border-slate-300/50">
+        <p className="text-sm font-semibold text-green-200">✓ Goal Created!</p>
+    </div>
+)}
                     {message.role === "ai" && currentGeneratedPlan && message.text.includes(currentGeneratedPlan.title) && (
                       <div className="mt-3 flex gap-2">
                         <Button
@@ -499,15 +561,6 @@ export default function ChatInterface() {
                           onClick={() => setIsPlanDialogOpen(true)}
                         >
                           <CalendarIcon className="h-3 w-3 mr-1" /> View Plan
-                        </Button>
-                        <Button
-                          size="sm"
-                          className="text-xs btn-blue"
-                          onClick={handleIntegratePlanToCalendar}
-                          disabled={!isAuthenticated || isIntegratingPlan}
-                        >
-                          {isIntegratingPlan ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Plus className="h-3 w-3 mr-1" />}
-                          {isAuthenticated ? "Integrate" : "Sign In to Integrate"}
                         </Button>
                       </div>
                     )}
@@ -599,6 +652,21 @@ export default function ChatInterface() {
               )}
             </div>
           </div>
+          
+          <div className="mt-6 pt-4 border-t border-slate-200">
+            <label className="text-md font-semibold text-slate-700">Assign to Goal</label>
+            <Select value={selectedGoalId} onValueChange={setSelectedGoalId}>
+              <SelectTrigger className="mt-2">
+                <SelectValue placeholder="(Optional) Assign this plan to a goal" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">None</SelectItem>
+                {goals.map(goal => (
+                  <SelectItem key={goal.id} value={goal.id}>{goal.title}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
           {currentGeneratedPlan && (
             <div className="mt-6 pt-4 border-t border-slate-100">
@@ -632,14 +700,14 @@ export default function ChatInterface() {
             <Button
               onClick={handleIntegratePlanToCalendar}
               className="btn-blue"
-              disabled={!isAuthenticated || isIntegratingPlan || !currentGeneratedPlan || currentGeneratedPlan.tasks.length === 0}
+              disabled={isIntegratingPlan || !currentGeneratedPlan || currentGeneratedPlan.tasks.length === 0}
             >
               {isIntegratingPlan ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Plus className="h-4 w-4 mr-2" />}
-              {isAuthenticated ? "Integrate to Calendar" : "Sign In to Integrate"}
+              Add to Calendar
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
     </>
-  )
+  );
 }

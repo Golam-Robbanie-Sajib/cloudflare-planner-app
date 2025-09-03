@@ -21,6 +21,7 @@ import { toast } from "@/components/ui/use-toast"
 import { useCalendarStore } from "@/lib/calendar-store"
 import { CalendarTask } from "@/lib/firestore-calendar"
 import { useAuth } from "@/lib/auth-context"
+import { useGoalStore } from "@/lib/goal-store";
 
 type CalendarViewType = "daily" | "weekly" | "monthly"
 
@@ -33,6 +34,7 @@ export default function Calendar({ view }: CalendarProps) {
   const [isAddTaskOpen, setIsAddTaskOpen] = useState(false)
   const [editingTask, setEditingTask] = useState<CalendarTask | null>(null)
   const [isEditTaskOpen, setIsEditTaskOpen] = useState(false)
+  const { goals } = useGoalStore();
   const { tasks, addTask, updateTask, toggleTask, deleteTask, loading } = useCalendarStore()
   const { isAuthenticated, getAccessToken } = useAuth()
   const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -45,7 +47,8 @@ export default function Calendar({ view }: CalendarProps) {
     endTime: "10:00",
     priority: "medium" as "high" | "medium" | "low",
     type: "task" as "task" | "event",
-    location: ""
+    location: "",
+     goalId: ""
   })
 
   const resetForm = () => {
@@ -57,7 +60,8 @@ export default function Calendar({ view }: CalendarProps) {
       endTime: "10:00",
       priority: "medium",
       type: "task",
-      location: ""
+      location: "",
+      goalId: ""
     })
   }
 
@@ -71,7 +75,8 @@ export default function Calendar({ view }: CalendarProps) {
       endTime: editingTask.endTime,
       priority: editingTask.priority,
       type: editingTask.type,
-      location: editingTask.location || ""
+      location: editingTask.location || "",
+      goalId: editingTask.goalId || ""
     });
   }
 }, [isEditTaskOpen, editingTask]);
@@ -99,6 +104,7 @@ useEffect(() => {
         completed: false,
         source: "user",
         synced: false,
+        ...(taskForm.goalId && { goalId: taskForm.goalId }),
       }
 
       if (taskForm.location) {
@@ -144,7 +150,8 @@ useEffect(() => {
       priority: taskForm.priority,
       type: taskForm.type,
       // 2. Handle the location field safely. Send an empty string to clear it.
-      location: taskForm.location || "" 
+      location: taskForm.location || "",
+      ...(taskForm.goalId && { goalId: taskForm.goalId }),
     };
 
       // 3. Send the clean payload to Firestore
@@ -403,6 +410,22 @@ const handleSyncTask = async (task: CalendarTask) => {
           />
         </div>
       )}
+      <div className="space-y-2">
+        <Label htmlFor="goal">Assign to Goal (Optional)</Label>
+        <Select value={taskForm.goalId} onValueChange={(value) => setTaskForm(prev => ({ ...prev, goalId: value }))}>
+          <SelectTrigger>
+            <SelectValue placeholder="Select a goal" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="">None</SelectItem>
+            {goals.map(goal => (
+              <SelectItem key={goal.id} value={goal.id}>
+                {goal.title}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
       <Button type="submit" className="w-full btn-purple shadow-lg">
         {submitText}
       </Button>

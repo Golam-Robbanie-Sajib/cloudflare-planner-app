@@ -20,6 +20,7 @@ export interface CalendarTask {
   date: string
   startTime: string
   endTime: string
+  goalId?: string; 
   priority: "high" | "medium" | "low"
   type: "task" | "event"
   completed: boolean

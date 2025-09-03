@@ -3,6 +3,7 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
+import { GoalProvider } from "@/lib/goal-store";
 
 import { GoogleOAuthProvider } from '@react-oauth/google';
 import { AuthProvider } from "@/lib/auth-context";
@@ -47,9 +48,11 @@ export default function RootLayout({
         <GoogleOAuthProvider clientId={clientId}>
           <AuthProvider>
             <ProfileProvider>
-              <CalendarProvider>
-                {children}
-              </CalendarProvider>
+              <GoalProvider>
+                <CalendarProvider>
+                  {children}
+                </CalendarProvider>
+              </GoalProvider>
             </ProfileProvider>
             <Toaster />
           </AuthProvider>
