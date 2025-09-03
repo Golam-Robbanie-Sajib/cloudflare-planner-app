@@ -43,11 +43,46 @@ class LearningPlannerService {
 
     // ... (the rest of your LearningPlannerService methods are unchanged) ...
     async handleChatMessage(userMessage, chatHistory) {
-        const contents = (chatHistory || []).map(msg => ({ role: msg.role === 'user' ? 'user' : 'model', parts: msg.parts }));
-        contents.push({ role: 'user', parts: [{ text: userMessage }] });
-        try { return await this._callGemini(contents); }
-        catch (error) { return `Sorry, I encountered an error: ${error.message}`; }
+        const systemInstruction = `You are an intelligent goal planner assistant. Analyze the user's latest message in the context of the entire chat history to determine their intent.
+    Respond with a JSON object that strictly follows this format:
+    {
+      "intent": "chat" | "create_goal",
+      "goalTitle": string | null,
+      "response": string
     }
+
+    - Use the CHAT HISTORY to understand the topic. If the user says "in 10 days" and the previous message was about learning React, you know the topic is React.
+    - If the user is stating a NEW GOAL, set "intent" to "create_goal", extract the goal's title, and formulate a "response" confirming this.
+    - Otherwise, set "intent" to "chat", "goalTitle" to null, and formulate a helpful conversational "response".
+    `;
+
+    // We now build the context with the full history
+    const contents = [
+      { role: 'user', parts: [{ text: systemInstruction }] },
+      { role: 'model', parts: [{ text: "Okay, I understand. I will use the chat history for context and respond in the specified JSON format." }] }
+    ];
+
+    // Add the previous chat history
+    chatHistory.forEach(msg => {
+        contents.push({
+            role: msg.role === 'ai' ? 'model' : 'user',
+            parts: msg.parts
+        });
+    });
+
+    // Add the latest user message
+    contents.push({ role: 'user', parts: [{ text: userMessage }] });
+
+    try {
+      const geminiResponseText = await this._callGemini(contents);
+      const jsonBlockCleaned = geminiResponseText.trim().replace(/^```json\s*/, '').replace(/\s*```$/, '').trim();
+      return JSON.parse(jsonBlockCleaned);
+    } catch (error) {
+      console.error("Error parsing AI response for intent detection:", error);
+      return { intent: "chat", goalTitle: null, response: "I had a little trouble understanding that. Could you please rephrase?" };
+    }
+} 
+    
 
     async generateStructuredPlan({ goal, durationDays, startDateStr, ...otherParams }) {
         const currentDate = new Date().toISOString().split('T')[0];
@@ -147,8 +182,8 @@ app.post('/chat-message', async (c) => {
     try {
         const planner = new LearningPlannerService(process.env.GOOGLE_API_KEY);
         const { userMessage, chatHistory = [] } = await c.req.json();
-        const aiResponseText = await planner.handleChatMessage(userMessage, chatHistory);
-        return c.json({ aiResponse: aiResponseText });
+        const aiResponseObject = await planner.handleChatMessage(userMessage, chatHistory);
+        return c.json(aiResponseObject);
     } catch (error) { return handleServiceError(error, c); }
 });
 

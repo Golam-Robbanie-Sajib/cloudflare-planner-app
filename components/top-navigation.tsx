@@ -2,7 +2,7 @@
 
 "use client"
 
-import { Settings, Calendar, MessageSquare } from "lucide-react"
+import { Settings, Calendar, MessageSquare, TrendingUp } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useRouter } from "next/navigation";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -42,6 +42,11 @@ export default function TopNavigation() {
         {!isAuthenticated && <GoogleAuthButton />}
 
         {/* Navigation buttons - always visible */}
+        <Link href="/goals">
+          <Button variant="ghost" size="icon" className="hover:bg-green-100 hover:text-green-600">
+            <TrendingUp className="h-5 w-5" />
+          </Button>
+        </Link>
         <Link href="/calendar">
           <Button variant="ghost" size="icon" className="hover:bg-purple-100 hover:text-purple-600">
             <Calendar className="h-5 w-5" />

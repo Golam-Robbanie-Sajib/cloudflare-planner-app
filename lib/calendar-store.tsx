@@ -19,7 +19,7 @@ interface CalendarStore {
   updateTask: (id: string, updates: Partial<CalendarTask>) => Promise<void>
   toggleTask: (id: string) => Promise<void>
   deleteTask: (id: string) => Promise<void>
-  addAIGeneratedTasks: (tasks: any[]) => Promise<void>
+  addAIGeneratedTasks: (tasks: any[], goalId?: string) => Promise<void>
 }
 
 const CalendarContext = createContext<CalendarStore | undefined>(undefined)
@@ -75,7 +75,7 @@ export function CalendarProvider({ children }: { children: ReactNode }) {
     await deleteTaskFromFirestore(userInfo.email, id)
   }
 
-  const addAIGeneratedTasks = async (aiTasks: any[]) => {
+  const addAIGeneratedTasks = async (aiTasks: any[], goalId?: string) => {
     if (!userInfo?.email) return
 
     for (const task of aiTasks) {
@@ -95,7 +95,9 @@ export function CalendarProvider({ children }: { children: ReactNode }) {
         type: "event",
         completed: false,
         source: "ai",
-        synced: true // AI tasks are already synced to Google Calendar
+        synced: true,
+  // This line conditionally adds the goalId field ONLY if goalId is a truthy value
+        ...(goalId && { goalId }),
       })
     }
   }

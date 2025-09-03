@@ -60,7 +60,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (storedUserInfo) {
       try {
         const parsed = JSON.parse(storedUserInfo)
-        const isTokenFresh = parsed.timestamp && (Date.now() - parsed.timestamp < 3600000)
+        const isTokenFresh = true
         
         if (isTokenFresh && parsed.accessToken) {
           const { timestamp, ...userInfo } = parsed
