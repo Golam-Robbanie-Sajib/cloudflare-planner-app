@@ -48,7 +48,7 @@ export const addGoal = async (
   userId: string,
   goalData: Omit<UserGoal, "id" | "createdAt" | "updatedAt">
 ) => {
-  await addDoc(getGoalsCollection(userId), {
+  return await addDoc(getGoalsCollection(userId), {
     ...goalData,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),

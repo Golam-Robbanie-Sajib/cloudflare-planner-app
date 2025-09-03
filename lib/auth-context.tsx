@@ -5,6 +5,7 @@ import { createContext, useContext, useState, useEffect, type ReactNode } from "
 import { googleLogout } from "@react-oauth/google"
 import { GoogleAuthProvider, signInWithPopup, signOut as firebaseSignOut, onAuthStateChanged } from "firebase/auth"
 import { auth, googleProvider } from "./firebase"
+import { toast } from "@/components/ui/use-toast"
 
 interface UserInfo {
   email: string
@@ -78,67 +79,71 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const signInWithGoogle = async () => {
-    setIsLoading(true)
-    setError(null)
+    setIsLoading(true);
+  setError(null);
+  
+  try {
+    await signOut();
     
-    try {
-      // Clear any existing auth state first
-      await signOut()
-      
-      const result = await signInWithPopup(auth, googleProvider)
-      const credential = GoogleAuthProvider.credentialFromResult(result)
+    const result = await signInWithPopup(auth, googleProvider);
+    const credential = GoogleAuthProvider.credentialFromResult(result);
 
-      if (!result.user || !credential?.accessToken) {
-        throw new Error("Google sign-in failed. Please try again.")
-      }
-
-      const { displayName, email, photoURL } = result.user
-      const accessToken = credential.accessToken
-
-      if (!displayName || !email) {
-        throw new Error("User information is missing from Google response.")
-      }
-
-      const newUserInfo: UserInfo = {
-        name: displayName,
-        email: email,
-        picture: photoURL || "",
-        accessToken: accessToken,
-      }
-
-      setUserInfo(newUserInfo)
-      localStorage.setItem("userInfo", JSON.stringify({ 
-        ...newUserInfo, 
-        timestamp: Date.now() 
-      }))
-
-      console.log('Successfully signed in:', email)
-
-    } catch (error: any) {
-      console.error("Authentication error:", error)
-      
-      // Set user-friendly error messages
-      let errorMessage = "Sign-in failed. Please try again."
-      
-      if (error.code === "auth/configuration-not-found") {
-        errorMessage = "Authentication service is not properly configured. Please contact support."
-      } else if (error.code === "auth/popup-closed-by-user") {
-        errorMessage = "Sign-in was cancelled."
-      } else if (error.code === "auth/popup-blocked") {
-        errorMessage = "Pop-up was blocked. Please allow pop-ups and try again."
-      } else if (error.message) {
-        errorMessage = error.message
-      }
-      
-      setError(errorMessage)
-      
-      // Clear any existing session on error
-      localStorage.removeItem("userInfo")
-      setUserInfo(null)
-    } finally {
-      setIsLoading(false)
+    if (!result.user || !credential?.accessToken) {
+      throw new Error("Google sign-in failed. Please try again.");
     }
+
+    const { displayName, email, photoURL } = result.user;
+    const accessToken = credential.accessToken;
+
+    if (!displayName || !email) {
+      throw new Error("User information is missing from Google response.");
+    }
+
+    const newUserInfo: UserInfo = {
+      name: displayName,
+      email: email,
+      picture: photoURL || "",
+      accessToken: accessToken,
+    };
+
+    setUserInfo(newUserInfo);
+    localStorage.setItem("userInfo", JSON.stringify({ 
+      ...newUserInfo, 
+      timestamp: Date.now() 
+    }));
+
+    console.log('Successfully signed in:', email);
+
+  } catch (error: any) {
+    console.error("Authentication error:", error);
+    
+    if (error.code === "auth/cancelled-popup-request") {
+      toast({
+        title: "Sign-in Cancelled",
+        description: "You cancelled the sign-in process.",
+      });
+      setError(null); 
+    } else {
+      let errorMessage = "Sign-in failed. Please try again.";
+      if (error.code === "auth/popup-closed-by-user") {
+        errorMessage = "Sign-in was cancelled.";
+      } else if (error.code === "auth/popup-blocked") {
+        errorMessage = "Pop-up was blocked. Please allow pop-ups and try again.";
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      setError(errorMessage);
+    }
+    
+    localStorage.removeItem("userInfo");
+    setUserInfo(null);
+  } finally {
+    // THIS IS THE CRITICAL LOGIC FIX:
+    // This will run whether the sign-in succeeds or fails,
+    // ensuring the loading state is always turned off.
+    setIsLoading(false);
   }
+};
 
   const signOut = async () => {
     try {

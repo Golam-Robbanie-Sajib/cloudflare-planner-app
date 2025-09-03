@@ -9,7 +9,7 @@ import { trimTrailingSlash } from 'hono/trailing-slash';
 export const runtime = 'edge';
 
 // --- Your existing LearningPlannerService class (unchanged) ---
-const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
+const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 const CALENDAR_API_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 const DEFAULT_TIMEZONE = 'Asia/Dhaka';
 
