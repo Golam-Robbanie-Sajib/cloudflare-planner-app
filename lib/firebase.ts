@@ -35,7 +35,8 @@ googleProvider.addScope('https://www.googleapis.com/auth/userinfo.email')
 
 // Set custom parameters
 googleProvider.setCustomParameters({
-  prompt: 'select_account'
+  prompt: 'select_account',
+  access_type: 'offline',
 })
 
 export default app
