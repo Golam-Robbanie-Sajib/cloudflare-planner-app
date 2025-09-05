@@ -29,7 +29,7 @@ export const auth = getAuth(app)
 
 // Configure Google Auth Provider with proper scopes
 export const googleProvider = new GoogleAuthProvider()
-googleProvider.addScope('https://www.googleapis.com/auth/calendar')
+googleProvider.addScope('https://www.googleapis.com/auth/calendar.events')
 googleProvider.addScope('https://www.googleapis.com/auth/userinfo.profile')
 googleProvider.addScope('https://www.googleapis.com/auth/userinfo.email')
 
