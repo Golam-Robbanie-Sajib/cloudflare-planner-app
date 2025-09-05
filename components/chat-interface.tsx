@@ -88,7 +88,7 @@ interface FrontendMessage {
 
 export default function ChatInterface() {
   const { addAIGeneratedTasks } = useCalendarStore();
-  const { isAuthenticated, getAccessToken } = useAuth();
+  const { isAuthenticated, getAccessToken, signInWithGoogle, signOut } = useAuth();
   const { goals, addGoal } = useGoalStore();
   const isMobile = useIsMobile();
  
@@ -212,56 +212,63 @@ export default function ChatInterface() {
   
 
   const handleSendMessage = async () => {
-    if (!chatInput.trim() || isChatting) return;
+  if (!chatInput.trim() || isChatting) return;
 
-    const newUserMessage: FrontendMessage = { id: Date.now().toString(), text: chatInput, role: "user", timestamp: new Date() };
-    setMessages(prev => [...prev, newUserMessage]);
-    const currentInput = chatInput;
-    setChatInput("");
-    setIsChatting(true);
+  const newUserMessage: FrontendMessage = { id: Date.now().toString(), text: chatInput, role: "user", timestamp: new Date() };
+  setMessages(prev => [...prev, newUserMessage]);
+  const currentInput = chatInput;
+  setChatInput("");
+  setIsChatting(true);
 
-    parsePlanParamsFromMessage(currentInput);
+  parsePlanParamsFromMessage(currentInput);
+  const backendChatHistory = mapMessagesToBackendHistory([...messages, newUserMessage]);
 
-    const backendChatHistory = mapMessagesToBackendHistory([...messages, newUserMessage]);
-
-    try {
-      const accessToken = getAccessToken();
-      if (!accessToken) throw new Error("Authentication failed. Please sign in again.");
-
-      const response = await fetch(`${API_BASE_URL}/chat-message`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
-        body: JSON.stringify({ userMessage: currentInput, chatHistory: backendChatHistory.slice(0, -1) }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || "Failed to get response from AI");
-      }
-
-      const data: { intent: string; goalTitle: string | null; response: string } = await response.json();
-      const aiResponseMessage: FrontendMessage = { id: (Date.now() + 1).toString(), text: data.response, role: "ai", timestamp: new Date() };
-
-      if (data.intent === "create_goal" && data.goalTitle) {
-        setSuggestedGoalTitle(data.goalTitle);
-      }
-      setMessages(prev => [...prev, aiResponseMessage]);
-
-    } catch (error) {
-      console.error("Chat API error:", error);
-      toast({ title: "Error", description: (error as Error).message, variant: "destructive" });
-      const errorResponseMessage: FrontendMessage = { id: (Date.now() + 1).toString(), text: `Sorry, I encountered an error: ${(error as Error).message}`, role: "ai", timestamp: new Date() };
-      setMessages(prev => [...prev, errorResponseMessage]);
-    } finally {
-      setIsChatting(false);
+  try {
+    // --- THIS IS THE NEW, SMART TOKEN REFRESH LOGIC ---
+    let accessToken = getAccessToken();
+    if (!accessToken) {
+      console.log("Token stale for chat, refreshing...");
+      accessToken = await signInWithGoogle();
     }
-  };
+    if (!accessToken) {
+      throw new Error("Authentication failed. Please sign in again.");
+    }
+    // --- END OF REFRESH LOGIC ---
+
+    const response = await fetch(`${API_BASE_URL}/chat-message`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify({ userMessage: currentInput, chatHistory: backendChatHistory.slice(0, -1) }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.detail || "Failed to get response from AI");
+    }
+
+    const data: { intent: string; goalTitle: string | null; response: string } = await response.json();
+    const aiResponseMessage: FrontendMessage = { id: (Date.now() + 1).toString(), text: data.response, role: "ai", timestamp: new Date() };
+
+    if (data.intent === "create_goal" && data.goalTitle) {
+      setSuggestedGoalTitle(data.goalTitle);
+    }
+    setMessages(prev => [...prev, aiResponseMessage]);
+
+  } catch (error) {
+    console.error("Chat API error:", error);
+    toast({ title: "Error", description: (error as Error).message, variant: "destructive" });
+    const errorResponseMessage: FrontendMessage = { id: (Date.now() + 1).toString(), text: `Sorry, I encountered an error: ${(error as Error).message}`, role: "ai", timestamp: new Date() };
+    setMessages(prev => [...prev, errorResponseMessage]);
+  } finally {
+    setIsChatting(false);
+  }
+};
 
 
 
   const handleRequestPlanGeneration = async (directPayload?: GeneratePlanRequestPayload) => {
      const payload: GeneratePlanRequestPayload = directPayload || {
-      goal: planRequestParams.goal || "Learning Goal",
+      goal: planRequestParams.goal || "Learning Goal", // Your core logic is preserved
       durationDays: planRequestParams.durationDays || 7,
       startDate: planRequestParams.startDate || new Date(Date.now() + 86400000).toISOString().split("T")[0],
       dailyHours: planRequestParams.dailyHours || 2,
@@ -279,12 +286,25 @@ export default function ChatInterface() {
     if (!directPayload) setCurrentGeneratedPlan(null);
 
     try {
-      const accessToken = getAccessToken();
-      if (!accessToken) throw new Error("Authentication failed. Please sign in again.");
+      // ===================================================================
+      // === THIS IS THE ADDED TOKEN-REFRESH LOGIC =========================
+      // ===================================================================
+      let accessToken = getAccessToken();
+      if (!accessToken) {
+          console.log("Token stale for plan generation, refreshing...");
+          accessToken = await signInWithGoogle();
+      }
+      if (!accessToken) {
+          // This error will be caught by the catch block below
+          throw new Error("Authentication failed. Please sign in again.");
+      }
+      // ===================================================================
+      // === END OF ADDED LOGIC ============================================
+      // ===================================================================
       
       const response = await fetch(`${API_BASE_URL}/generate-plan`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` }, // Correctly uses the (potentially new) token
         body: JSON.stringify(payload),
       });
 
@@ -320,45 +340,103 @@ export default function ChatInterface() {
     }
   };
 
-  const handleIntegratePlanToCalendar = async () => {
-    if (!currentGeneratedPlan || !currentGeneratedPlan.originalBackendTasks) {
+
+const handleIntegratePlanToCalendar = async () => {
+  // 1. --- Initial Guard Clauses ---
+  if (!currentGeneratedPlan || !currentGeneratedPlan.originalBackendTasks) {
     toast({ title: "No Plan", description: "No plan to integrate.", variant: "destructive" });
+    return;
+  }
+  if (!isAuthenticated) {
+    toast({ title: "Authentication Required", description: "Please sign in first.", variant: "destructive" });
     return;
   }
 
   setIsIntegratingPlan(true);
+
   try {
+    // 2. --- Smart Access Token Retrieval & Refresh ---
+    let accessToken = getAccessToken(); // "Fast path" check for a fresh token from localStorage
+
+    // If the fast path fails (token is stale or missing), we must get a new one.
+    if (!accessToken) {
+      console.log("Access token is stale or missing, attempting to refresh session...");
+      // This will trigger the sign-in flow, which will likely be a seamless popup
+      // for an already-authenticated user, and it returns the new, fresh token.
+      accessToken = await signInWithGoogle();
+    }
+
+    // After the potential refresh, we do a final check.
+    if (!accessToken) {
+      // This will only happen if the refresh process itself failed (e.g., user closed the popup).
+      throw new Error("Could not get a valid session. Please try again.");
+    }
+
+    // 3. --- Call the External Google Calendar API ---
+    // We do this first, because it's the most likely step to fail.
+    const googleApiPayload = {
+      skillName: currentGeneratedPlan.title,
+      structuredTasks: currentGeneratedPlan.originalBackendTasks,
+    };
+
+    const response = await fetch(`${API_BASE_URL}/integrate-plan`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify(googleApiPayload),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      // If the API call fails with an auth error even after our refresh attempt,
+      // it means something is seriously wrong. We should sign the user out.
+      if (response.status === 401) {
+        signOut();
+      }
+      throw new Error(errorData.detail || "Failed to sync with Google Calendar.");
+    }
+
+    // 4. --- Handle Internal Database Operations (Firestore) ---
     let finalGoalId: string | undefined = undefined;
 
-    // Step 1: Check if the user wants to create a goal.
+    // Create the new goal if the user provided a title
     if (goalInputForDialog.trim() !== "") {
       const newGoalId = await addGoal({
         title: goalInputForDialog.trim(),
         description: `Goal for the plan: ${currentGeneratedPlan.title}`,
         status: "in_progress",
       });
-
       if (newGoalId) {
         finalGoalId = newGoalId;
-        toast({ title: "Goal Created!", description: `"${goalInputForDialog.trim()}" has been saved.` });
       }
     }
 
-    // Step 2: Add the tasks, linking them to the new goal if it was created.
+    // Add the AI-generated tasks to our internal calendar, linking the new goal ID
     await addAIGeneratedTasks(currentGeneratedPlan.originalBackendTasks, finalGoalId);
 
-    toast({ title: "Plan Integrated!", description: "Your new tasks have been added to the calendar." });
+    // 5. --- Success Feedback and UI Cleanup ---
+    toast({
+      title: "Plan Integrated Successfully!",
+      description: "Tasks have been added to your Google Calendar and saved to your dashboard.",
+    });
 
-    // Step 3: Clean up and close the dialog.
     setIsPlanDialogOpen(false);
     setCurrentGeneratedPlan(null);
-    setSuggestedGoalTitle(""); // Reset the suggestion
-    setGoalInputForDialog(""); // Reset the input
+    setSuggestedGoalTitle("");
+    setGoalInputForDialog("");
 
   } catch (error) {
+    // 6. --- Unified Error Handling ---
     console.error("Integrate Plan API error:", error);
-    toast({ title: "Error Integrating Plan", description: (error as Error).message, variant: "destructive" });
+    toast({
+      title: "Error Integrating Plan",
+      description: (error as Error).message,
+      variant: "destructive",
+    });
   } finally {
+    // 7. --- Final State Cleanup ---
     setIsIntegratingPlan(false);
   }
 };

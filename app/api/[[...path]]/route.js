@@ -133,7 +133,7 @@ class LearningPlannerService {
         const eventLinks = [];
         for (const taskData of structuredTasks) {
             const eventBody = { summary: taskData.summary || `${skillName} Task`, description: taskData.description || '', start: { dateTime: taskData.startTime, timeZone: DEFAULT_TIMEZONE }, end: { dateTime: taskData.endTime, timeZone: DEFAULT_TIMEZONE }, };
-            const response = await fetch(CALENDAR_API_URL, { method: 'POST', headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json', }, body: JSON.stringify(eventBody), });
+            const response = await fetch(CALENDAR_API_URL, { method: 'POST', headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json', 'Accept': 'application/json', 'User-Agent': 'TaskFlow/1.0' }, body: JSON.stringify(eventBody), });
             if (!response.ok) {
                 const errorData = await response.json();
                 const error = new Error(errorData.error?.message || "A Google Calendar API error occurred.");
