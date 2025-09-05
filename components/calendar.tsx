@@ -412,12 +412,12 @@ const handleSyncTask = async (task: CalendarTask) => {
       )}
       <div className="space-y-2">
         <Label htmlFor="goal">Assign to Goal (Optional)</Label>
-        <Select value={taskForm.goalId} onValueChange={(value) => setTaskForm(prev => ({ ...prev, goalId: value }))}>
+        <Select value={taskForm.goalId || 'none'} onValueChange={(value) => setTaskForm(prev => ({ ...prev, goalId: value }))}>
           <SelectTrigger>
             <SelectValue placeholder="Select a goal" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="">None</SelectItem>
+            <SelectItem value="none">None</SelectItem>
             {goals.map(goal => (
               <SelectItem key={goal.id} value={goal.id}>
                 {goal.title}
