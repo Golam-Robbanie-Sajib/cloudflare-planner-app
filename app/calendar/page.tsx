@@ -12,23 +12,28 @@ import { CalendarIcon, Clock, MapPin, Users, ArrowLeft, Plus, Check, Trash2, Inf
 import Link from "next/link"
 import { format, addDays, isToday, isTomorrow, parseISO } from "date-fns"
 import { useCalendarStore } from "@/lib/calendar-store"
+import { useGoalStore } from "@/lib/goal-store"
 import { toast } from "@/components/ui/use-toast"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
+import { AlertCircle, RefreshCw, ExternalLink, Target } from "lucide-react"
 
 export default function CalendarPage() {
   const { tasks, addTask, toggleTask, deleteTask, loading } = useCalendarStore();
+  const { goals } = useGoalStore();
+  const goalNameById = (id?: string) => id ? goals.find(g => g.id === id)?.title : undefined;
   const [isCreateEventOpen, setIsCreateEventOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<any | null>(null)
   const [showEventDialog, setShowEventDialog] = useState(false)
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [hoveredEvent, setHoveredEvent] = useState<string | null>(null)
 
-  // Convert tasks to events format for display
+  // Convert tasks to events format for display, preserving goal + sync metadata.
   const events = tasks.map((task) => ({
     ...task,
     date: new Date(task.date + "T00:00:00"),
     type: task.type === "event" ? "meeting" : task.priority === "high" ? "deadline" : "reminder",
+    goalTitle: goalNameById(task.goalId),
   }))
 
   // Get events for a specific date
@@ -92,6 +97,7 @@ export default function CalendarPage() {
     const startTime = formData.get("startTime") as string
     const endTime = formData.get("endTime") as string
     const priority = formData.get("priority") as "high" | "medium" | "low"
+    const goalId = (formData.get("goalId") as string) || ""
 
     if (!title || !date || !startTime || !endTime) {
       toast({
@@ -113,6 +119,7 @@ export default function CalendarPage() {
       source: "user",
       completed: false,
       synced: false,
+      ...(goalId && goalId !== "none" ? { goalId } : {}),
     })
 
     setShowCreateDialog(false)
@@ -193,6 +200,21 @@ export default function CalendarPage() {
                       <option value="low">Low Priority</option>
                     </select>
                   </div>
+                  {goals.length > 0 && (
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium">Link to Goal (optional)</label>
+                      <select
+                        name="goalId"
+                        defaultValue="none"
+                        className="w-full p-2 rounded-md border border-slate-200 focus:border-purple-300 focus:ring-purple-200"
+                      >
+                        <option value="none">No goal</option>
+                        {goals.map(g => (
+                          <option key={g.id} value={g.id}>{g.title}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                   <div className="flex gap-2 pt-4">
                     <Button
                       type="button"
@@ -267,6 +289,23 @@ export default function CalendarPage() {
                                 {event.location && (
                                   <p className="text-xs text-muted-foreground truncate mt-1">📍 {event.location}</p>
                                 )}
+                                <div className="flex flex-wrap gap-1 mt-1">
+                                  {event.goalTitle && (
+                                    <Badge variant="outline" className="text-[10px] py-0 h-4 px-1 border-purple-300 text-purple-700">
+                                      <Target className="h-2.5 w-2.5 mr-0.5" />{event.goalTitle}
+                                    </Badge>
+                                  )}
+                                  {event.syncStatus === "failed" && (
+                                    <Badge variant="outline" className="text-[10px] py-0 h-4 px-1 border-red-300 text-red-700">
+                                      <AlertCircle className="h-2.5 w-2.5 mr-0.5" />sync failed
+                                    </Badge>
+                                  )}
+                                  {event.syncStatus === "pending" && event.source === "ai" && (
+                                    <Badge variant="outline" className="text-[10px] py-0 h-4 px-1 border-slate-300 text-slate-500">
+                                      <RefreshCw className="h-2.5 w-2.5 mr-0.5" />syncing
+                                    </Badge>
+                                  )}
+                                </div>
                               </div>
                               <div className="flex items-center gap-1">
                                 {event.completed && <Check className="h-3 w-3 text-green-600" />}
@@ -425,7 +464,7 @@ export default function CalendarPage() {
                   <span className="text-sm capitalize">{selectedEvent.priority} priority</span>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <Badge variant={getBadgeVariant(selectedEvent.type)} className="capitalize">
                     {selectedEvent.type}
                   </Badge>
@@ -433,6 +472,26 @@ export default function CalendarPage() {
                     <Badge variant="outline" className="text-green-600 border-green-600">
                       Completed
                     </Badge>
+                  )}
+                  {selectedEvent.goalTitle && (
+                    <Badge variant="outline" className="border-purple-300 text-purple-700">
+                      <Target className="h-3 w-3 mr-1" />{selectedEvent.goalTitle}
+                    </Badge>
+                  )}
+                  {selectedEvent.syncStatus === "failed" && (
+                    <Badge variant="outline" className="border-red-300 text-red-700">
+                      <AlertCircle className="h-3 w-3 mr-1" />Google sync failed
+                    </Badge>
+                  )}
+                  {selectedEvent.googleEventLink && (
+                    <a
+                      href={selectedEvent.googleEventLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-blue-600 hover:underline inline-flex items-center"
+                    >
+                      <ExternalLink className="h-3 w-3 mr-1" />Open in Google Calendar
+                    </a>
                   )}
                 </div>
               </div>

@@ -1,0 +1,44 @@
+// Firestore security rules for the Goal Planner app.
+//
+// Schema invariant: every user document lives under /users/{userId}/...
+// where {userId} is the user's email address (set as User.email in
+// lib/calendar-store.tsx and lib/goal-store.tsx). A user may only read and
+// write their own subtree.
+//
+// Deploy with: firebase deploy --only firestore:rules
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper: signed-in users whose verified email matches the {userId} path
+    // segment. We use email as the document ID rather than uid, mirroring the
+    // app's existing data model.
+    function isOwner(userId) {
+      return request.auth != null
+        && request.auth.token.email == userId
+        && request.auth.token.email_verified == true;
+    }
+
+    match /users/{userId} {
+      allow read, write: if isOwner(userId);
+
+      match /tasks/{taskId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /goals/{goalId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /profile/{profileDoc} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    // Default-deny everything else.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

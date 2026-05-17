@@ -17,11 +17,15 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { toast } from "@/components/ui/use-toast"
 import { useCalendarStore } from "@/lib/calendar-store"
+import { useGoalStore } from "@/lib/goal-store"
 import { type VariantProps } from "class-variance-authority"
+import { Target, AlertCircle, ExternalLink } from "lucide-react"
 
 export default function EventsPage() {
   const [isCreateEventOpen, setIsCreateEventOpen] = useState(false)
   const { tasks, addTask } = useCalendarStore()
+  const { goals } = useGoalStore()
+  const goalNameById = (id?: string) => id ? goals.find(g => g.id === id)?.title : undefined
 
   // ADDED: State management for the details dialog
   const [selectedEvent, setSelectedEvent] = useState<any | null>(null)
@@ -32,7 +36,6 @@ export default function EventsPage() {
     id: task.id,
     title: task.title,
     description: task.description,
-    // Ensure date is treated as a Date object for sorting and filtering
     date: new Date(task.date + "T00:00:00"),
     location: task.location,
     attendees: task.attendees,
@@ -41,6 +44,9 @@ export default function EventsPage() {
     endTime: task.endTime,
     priority: task.priority,
     completed: task.completed,
+    goalTitle: goalNameById(task.goalId),
+    syncStatus: task.syncStatus,
+    googleEventLink: task.googleEventLink,
   }))
 
   const [searchQuery, setSearchQuery] = useState("")
@@ -396,12 +402,34 @@ function EventCard({
       </CardContent>
       <CardFooter className="pt-2">
         <div className="flex items-center justify-between w-full">
-          <Badge variant={badgeVariant} className="capitalize">
-            <Tag className="mr-1 h-3 w-3" />
-            {event.type}
-          </Badge>
+          <div className="flex flex-wrap gap-1">
+            <Badge variant={badgeVariant} className="capitalize">
+              <Tag className="mr-1 h-3 w-3" />
+              {event.type}
+            </Badge>
+            {event.goalTitle && (
+              <Badge variant="outline" className="border-purple-300 text-purple-700">
+                <Target className="mr-1 h-3 w-3" />{event.goalTitle}
+              </Badge>
+            )}
+            {event.syncStatus === "failed" && (
+              <Badge variant="outline" className="border-red-300 text-red-700">
+                <AlertCircle className="mr-1 h-3 w-3" />sync failed
+              </Badge>
+            )}
+            {event.googleEventLink && (
+              <a
+                href={event.googleEventLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-blue-600 hover:underline inline-flex items-center"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <ExternalLink className="h-3 w-3 mr-0.5" />GCal
+              </a>
+            )}
+          </div>
           {!isPast && (
-            // MODIFIED: Add onClick
             <Button variant="outline" size="sm" className="hover:bg-purple-50 hover:border-purple-300" onClick={() => handleShowDetails(event)}>
               View
             </Button>

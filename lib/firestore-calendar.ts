@@ -13,6 +13,8 @@ import {
 } from "firebase/firestore"
 import { db } from "./firebase"
 
+export type SyncStatus = "pending" | "synced" | "failed"
+
 export interface CalendarTask {
   id: string
   title: string
@@ -20,14 +22,22 @@ export interface CalendarTask {
   date: string
   startTime: string
   endTime: string
-  goalId?: string; 
+  goalId?: string
   priority: "high" | "medium" | "low"
   type: "task" | "event"
   completed: boolean
+  completedAt?: Timestamp | null
   location?: string
   attendees?: number
-  source: "user" | "ai" // Track if user-created or AI-generated
-  synced: boolean // Track if synced to Google Calendar
+  source: "user" | "ai"
+  // Legacy boolean kept for back-compat with existing docs in Firestore.
+  synced: boolean
+  // syncStatus is the new source of truth for Google Calendar sync state.
+  // "pending" = not yet attempted, "synced" = successfully written to GCal,
+  // "failed" = attempted and Google rejected; user can retry.
+  syncStatus?: SyncStatus
+  googleEventId?: string
+  googleEventLink?: string
   createdAt: Timestamp
   updatedAt: Timestamp
 }
@@ -37,27 +47,38 @@ const getUserTasksCollection = (userId: string) => {
   return collection(db, `users/${userId}/tasks`)
 }
 
+// Firestore rejects `undefined` values, but optional fields on CalendarTask
+// can easily be undefined when callers spread partial objects. Strip them
+// before every write.
+const stripUndefined = <T extends Record<string, any>>(obj: T): T => {
+  const out: Record<string, any> = {}
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== undefined) out[k] = v
+  }
+  return out as T
+}
+
 // Add a new task
 export const addTask = async (userId: string, taskData: Omit<CalendarTask, 'id' | 'createdAt' | 'updatedAt'>) => {
   const tasksRef = getUserTasksCollection(userId)
   const now = Timestamp.now()
-  
-  const docRef = await addDoc(tasksRef, {
+
+  const docRef = await addDoc(tasksRef, stripUndefined({
     ...taskData,
     createdAt: now,
-    updatedAt: now
-  })
-  
+    updatedAt: now,
+  }))
+
   return docRef.id
 }
 
 // Update a task
 export const updateTask = async (userId: string, taskId: string, updates: Partial<CalendarTask>) => {
   const taskRef = doc(db, `users/${userId}/tasks/${taskId}`)
-  await updateDoc(taskRef, {
+  await updateDoc(taskRef, stripUndefined({
     ...updates,
-    updatedAt: Timestamp.now()
-  })
+    updatedAt: Timestamp.now(),
+  }))
 }
 
 // Delete a task

@@ -3,33 +3,61 @@
 
 import { createContext, useContext, useState, useEffect, ReactNode } from "react"
 import { useAuth } from "./auth-context"
-import { 
-  CalendarTask, 
-  addTask as addTaskToFirestore, 
+import {
+  CalendarTask,
+  SyncStatus,
+  addTask as addTaskToFirestore,
   updateTask as updateTaskInFirestore,
   deleteTask as deleteTaskFromFirestore,
-  subscribeToTasks 
+  subscribeToTasks,
 } from "./firestore-calendar"
 import { Timestamp } from "firebase/firestore"
+
+export interface AIGeneratedTaskInput {
+  summary: string
+  description?: string | null
+  startTime: string
+  endTime: string
+}
+
+export interface AISyncResult {
+  taskId: string
+  googleEventId?: string
+  googleEventLink?: string
+  syncStatus: SyncStatus
+}
 
 interface CalendarStore {
   tasks: CalendarTask[]
   loading: boolean
-  addTask: (taskData: Omit<CalendarTask, 'id' | 'createdAt' | 'updatedAt'>) => Promise<void>
+  addTask: (taskData: Omit<CalendarTask, 'id' | 'createdAt' | 'updatedAt'>) => Promise<string | null>
   updateTask: (id: string, updates: Partial<CalendarTask>) => Promise<void>
   toggleTask: (id: string) => Promise<void>
   deleteTask: (id: string) => Promise<void>
-  addAIGeneratedTasks: (tasks: any[], goalId?: string) => Promise<void>
+  // Returns the IDs of the tasks just written so the caller can update their
+  // sync status after talking to Google Calendar.
+  addAIGeneratedTasks: (tasks: AIGeneratedTaskInput[], goalId?: string) => Promise<string[]>
+  // Mark a batch of previously-added tasks with the result of their Google
+  // Calendar sync attempt.
+  applySyncResults: (results: AISyncResult[]) => Promise<void>
+  // Retry a single failed sync — re-uploads to Google Calendar via /integrate-plan.
+  // (Hook left for UI to call; implementation lives in chat-interface for now.)
 }
 
 const CalendarContext = createContext<CalendarStore | undefined>(undefined)
+
+// Splits "HH:MM" + "YYYY-MM-DD" into a local Date — for ISO-time validation.
+const parseIsoSafely = (iso: string): Date | null => {
+  if (!iso || typeof iso !== "string") return null
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? null : d
+}
 
 export function CalendarProvider({ children }: { children: ReactNode }) {
   const [tasks, setTasks] = useState<CalendarTask[]>([])
   const [loading, setLoading] = useState(true)
   const { userInfo, isAuthenticated } = useAuth()
 
-  // Subscribe to real-time updates when user is authenticated
   useEffect(() => {
     if (!isAuthenticated || !userInfo?.email) {
       setTasks([])
@@ -46,14 +74,14 @@ export function CalendarProvider({ children }: { children: ReactNode }) {
     return unsubscribe
   }, [isAuthenticated, userInfo?.email])
 
-  const addTask = async (taskData: Omit<CalendarTask, 'id' | 'createdAt' | 'updatedAt'>) => {
-    if (!userInfo?.email) return
-    
-    await addTaskToFirestore(userInfo.email, {
+  const addTask = async (taskData: Omit<CalendarTask, 'id' | 'createdAt' | 'updatedAt'>): Promise<string | null> => {
+    if (!userInfo?.email) return null
+    const id = await addTaskToFirestore(userInfo.email, {
       ...taskData,
-      source: "user",
-      synced: false
+      source: taskData.source ?? "user",
+      synced: taskData.synced ?? false,
     })
+    return id
   }
 
   const updateTask = async (id: string, updates: Partial<CalendarTask>) => {
@@ -64,9 +92,11 @@ export function CalendarProvider({ children }: { children: ReactNode }) {
   const toggleTask = async (id: string) => {
     const task = tasks.find(t => t.id === id)
     if (!task || !userInfo?.email) return
-    
+
+    const nowDone = !task.completed
     await updateTaskInFirestore(userInfo.email, id, {
-      completed: !task.completed
+      completed: nowDone,
+      completedAt: nowDone ? Timestamp.now() : null,
     })
   }
 
@@ -75,31 +105,50 @@ export function CalendarProvider({ children }: { children: ReactNode }) {
     await deleteTaskFromFirestore(userInfo.email, id)
   }
 
-  const addAIGeneratedTasks = async (aiTasks: any[], goalId?: string) => {
-    if (!userInfo?.email) return
+  const addAIGeneratedTasks = async (aiTasks: AIGeneratedTaskInput[], goalId?: string): Promise<string[]> => {
+    if (!userInfo?.email) return []
 
+    const ids: string[] = []
     for (const task of aiTasks) {
-      await addTaskToFirestore(userInfo.email, {
-        title: task.summary || task.title,
+      // Defensive: skip tasks the AI returned with unparseable times. The
+      // backend already validates, but a corrupted record shouldn't poison
+      // the whole batch.
+      const start = parseIsoSafely(task.startTime)
+      const end = parseIsoSafely(task.endTime)
+      if (!start || !end || end <= start) continue
+
+      const id = await addTaskToFirestore(userInfo.email, {
+        title: task.summary,
         description: task.description || "",
         date: task.startTime.split('T')[0],
-        startTime: new Date(task.startTime).toLocaleTimeString('en-GB', { 
-          hour: '2-digit', 
-          minute: '2-digit' 
-        }),
-        endTime: new Date(task.endTime).toLocaleTimeString('en-GB', { 
-          hour: '2-digit', 
-          minute: '2-digit' 
-        }),
+        startTime: start.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
+        endTime: end.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
         priority: "medium",
         type: "event",
         completed: false,
+        completedAt: null,
         source: "ai",
-        synced: true,
-  // This line conditionally adds the goalId field ONLY if goalId is a truthy value
+        synced: false,
+        syncStatus: "pending",
         ...(goalId && { goalId }),
       })
+      ids.push(id)
     }
+    return ids
+  }
+
+  const applySyncResults = async (results: AISyncResult[]) => {
+    if (!userInfo?.email) return
+    await Promise.all(
+      results.map((r) =>
+        updateTaskInFirestore(userInfo.email!, r.taskId, {
+          syncStatus: r.syncStatus,
+          synced: r.syncStatus === "synced",
+          ...(r.googleEventId && { googleEventId: r.googleEventId }),
+          ...(r.googleEventLink && { googleEventLink: r.googleEventLink }),
+        }),
+      ),
+    )
   }
 
   return (
@@ -110,7 +159,8 @@ export function CalendarProvider({ children }: { children: ReactNode }) {
       updateTask,
       toggleTask,
       deleteTask,
-      addAIGeneratedTasks
+      addAIGeneratedTasks,
+      applySyncResults,
     }}>
       {children}
     </CalendarContext.Provider>

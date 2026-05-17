@@ -13,6 +13,37 @@ const GROQ_MODEL = "openai/gpt-oss-120b";
 const CALENDAR_API_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 const DEFAULT_TIMEZONE = 'Asia/Dhaka';
 
+// --- Validation helpers -----------------------------------------------------
+// AI-generated task fields aren't trusted: anything that can't be parsed as a
+// real datetime or has end <= start is dropped before it reaches Firestore or
+// Google Calendar. A plan with zero surviving tasks is treated as a failure.
+
+const ISO_LOOSE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/;
+
+function validateAndSanitizeTask(task) {
+    if (!task || typeof task !== 'object') return null;
+    const summary = typeof task.summary === 'string' ? task.summary.trim() : '';
+    if (!summary) return null;
+    const startStr = typeof task.startTime === 'string' ? task.startTime : '';
+    const endStr = typeof task.endTime === 'string' ? task.endTime : '';
+    if (!ISO_LOOSE.test(startStr) || !ISO_LOOSE.test(endStr)) return null;
+    const start = new Date(startStr);
+    const end = new Date(endStr);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+    if (end.getTime() <= start.getTime()) return null;
+    return {
+        summary,
+        description: typeof task.description === 'string' ? task.description : null,
+        startTime: startStr,
+        endTime: endStr,
+    };
+}
+
+function validateTaskBatch(tasks) {
+    if (!Array.isArray(tasks)) return [];
+    return tasks.map(validateAndSanitizeTask).filter(Boolean);
+}
+
 // Convert the Gemini-style `contents` array the frontend still sends
 // (`{role: 'user'|'model', parts: [{text}]}`) into OpenAI chat-completions
 // `messages` (`{role: 'user'|'assistant', content}`). Keeps the frontend
@@ -170,6 +201,15 @@ Field rules:
             if (otherParams.preferredTime) userPromptParts.push(`- Preferred Time of Day: ${otherParams.preferredTime}`);
             if (otherParams.currentSkillLevel) userPromptParts.push(`- Current Skill Level: ${otherParams.currentSkillLevel}`);
         }
+        if (otherParams.userProgress && typeof otherParams.userProgress === 'object') {
+            const p = otherParams.userProgress;
+            userPromptParts.push(`\n***USER PROGRESS SIGNAL (use this to calibrate difficulty/pace)***`);
+            if (typeof p.completionRate === 'number') userPromptParts.push(`- Past completion rate: ${(p.completionRate * 100).toFixed(0)}% (${p.completedTasks ?? '?'} of ${p.totalTasks ?? '?'} previous tasks completed)`);
+            if (typeof p.avgDelayDays === 'number') userPromptParts.push(`- Average task slippage: ${p.avgDelayDays.toFixed(1)} days late`);
+            if (Array.isArray(p.recentlyCompleted) && p.recentlyCompleted.length) userPromptParts.push(`- Recently completed: ${p.recentlyCompleted.slice(0, 5).join('; ')}`);
+            if (Array.isArray(p.recentlyMissed) && p.recentlyMissed.length) userPromptParts.push(`- Recently skipped/missed: ${p.recentlyMissed.slice(0, 5).join('; ')}`);
+            userPromptParts.push(`If completion rate is below 50%, reduce daily intensity and prefer shorter sessions. If above 85%, push slightly harder.`);
+        }
         userPromptParts.push(`\nReturn ONLY the JSON object described in the system prompt.`);
         const userPrompt = userPromptParts.join('\n');
 
@@ -181,32 +221,67 @@ Field rules:
         try {
             const raw = await this._callGroq({ systemPrompt, messages, jsonMode: true, temperature: 0.5 });
             const parsed = JSON.parse(raw);
-            const tasks = Array.isArray(parsed.structured_tasks) ? parsed.structured_tasks : null;
+            const rawTasks = Array.isArray(parsed.structured_tasks) ? parsed.structured_tasks : [];
+            const sanitized = validateTaskBatch(rawTasks);
             const humanReadable = typeof parsed.human_readable_plan === 'string' ? parsed.human_readable_plan : '';
-            if (!tasks || tasks.length === 0) {
-                return [null, "AI did not return any structured tasks."];
+            if (sanitized.length === 0) {
+                return [null, "AI did not return any valid scheduled tasks. Please try again."];
             }
-            return [tasks, humanReadable];
+            return [sanitized, humanReadable];
         } catch (error) {
             return [null, `An unexpected error occurred: ${error.message}`];
         }
     }
 
+    // Returns one result object per input task so the frontend can update each
+    // task's sync status independently. We continue past per-task errors so a
+    // single bad event doesn't abort the whole batch — but auth errors (401)
+    // still bubble up because they apply to every subsequent call.
     async addPlanToCalendar(skillName, structuredTasks, accessToken) {
-        const eventLinks = [];
-        for (const taskData of structuredTasks) {
-            const eventBody = { summary: taskData.summary || `${skillName} Task`, description: taskData.description || '', start: { dateTime: taskData.startTime, timeZone: DEFAULT_TIMEZONE }, end: { dateTime: taskData.endTime, timeZone: DEFAULT_TIMEZONE }, };
-            const response = await fetch(CALENDAR_API_URL, { method: 'POST', headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json', 'Accept': 'application/json', 'User-Agent': 'TaskFlow/1.0' }, body: JSON.stringify(eventBody), });
-            if (!response.ok) {
-                const errorData = await response.json();
-                const error = new Error(errorData.error?.message || "A Google Calendar API error occurred.");
-                if (response.status === 401) error.name = 'PermissionError';
-                throw error;
+        const results = [];
+        for (let i = 0; i < structuredTasks.length; i++) {
+            const taskData = structuredTasks[i];
+            const eventBody = {
+                summary: taskData.summary || `${skillName} Task`,
+                description: taskData.description || '',
+                start: { dateTime: taskData.startTime, timeZone: DEFAULT_TIMEZONE },
+                end: { dateTime: taskData.endTime, timeZone: DEFAULT_TIMEZONE },
+            };
+            try {
+                const response = await fetch(CALENDAR_API_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${accessToken}`,
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'User-Agent': 'TaskFlow/1.0',
+                    },
+                    body: JSON.stringify(eventBody),
+                });
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    if (response.status === 401) {
+                        const err = new Error(errorData.error?.message || "Google Calendar access expired.");
+                        err.name = 'PermissionError';
+                        throw err;
+                    }
+                    results.push({ index: i, status: 'failed', error: errorData.error?.message || `HTTP ${response.status}` });
+                    continue;
+                }
+                const eventData = await response.json();
+                results.push({
+                    index: i,
+                    status: 'synced',
+                    googleEventId: eventData.id,
+                    googleEventLink: eventData.htmlLink,
+                });
+            } catch (e) {
+                if (e.name === 'PermissionError') throw e;
+                results.push({ index: i, status: 'failed', error: e.message });
             }
-            const eventData = await response.json();
-            eventLinks.push(eventData.htmlLink);
         }
-        return [`Successfully added ${eventLinks.length} tasks to Google Calendar.`, eventLinks];
+        const okCount = results.filter(r => r.status === 'synced').length;
+        return [`Synced ${okCount}/${structuredTasks.length} tasks to Google Calendar.`, results];
     }
 }
 
@@ -262,14 +337,22 @@ app.post('/generate-plan', async (c) => {
 
 app.post('/integrate-plan', async (c) => {
     try {
-        const planner = new LearningPlannerService(process.env.GROQ_API_KEY);
+        // /integrate-plan doesn't actually need the LLM key — only the Google
+        // access token — so don't gate on GROQ_API_KEY here.
+        const planner = Object.create(LearningPlannerService.prototype);
         const authHeader = c.req.header('authorization');
         const accessToken = authHeader?.split(' ')[1];
         if (!accessToken) return c.json({ detail: "Authorization header is missing" }, 401);
         const { skillName, structuredTasks } = await c.req.json();
-        const [message, links] = await planner.addPlanToCalendar(skillName, structuredTasks, accessToken);
-        if (!links) return c.json({ detail: message }, 400);
-        return c.json({ message, calendarEventLinks: links });
+        const sanitized = validateTaskBatch(structuredTasks);
+        if (sanitized.length === 0) {
+            return c.json({ detail: "No valid tasks were provided to sync." }, 400);
+        }
+        const [message, results] = await planner.addPlanToCalendar(skillName, sanitized, accessToken);
+        // Keep `calendarEventLinks` for back-compat with any older clients, but
+        // the canonical response is now `results` — one entry per input task.
+        const calendarEventLinks = results.filter(r => r.status === 'synced').map(r => r.googleEventLink);
+        return c.json({ message, results, calendarEventLinks });
     } catch (error) { return handleServiceError(error, c); }
 });
 
