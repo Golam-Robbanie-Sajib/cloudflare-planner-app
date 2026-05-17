@@ -36,6 +36,19 @@ service cloud.firestore {
       }
     }
 
+    // Publicly shared, read-only plan snapshots. Anyone with the slug can
+    // read the document — that's the intended sharing mechanism. Writes are
+    // restricted to the owner identified by the document's `ownerEmail` field.
+    match /publicPlans/{slug} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.auth.token.email == request.resource.data.ownerEmail
+        && request.auth.token.email_verified == true;
+      allow update, delete: if request.auth != null
+        && request.auth.token.email == resource.data.ownerEmail
+        && request.auth.token.email_verified == true;
+    }
+
     // Default-deny everything else.
     match /{document=**} {
       allow read, write: if false;

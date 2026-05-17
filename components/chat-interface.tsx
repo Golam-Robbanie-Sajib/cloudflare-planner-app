@@ -26,6 +26,7 @@ import { useCalendarStore } from "@/lib/calendar-store"
 import { Textarea } from "@/components/ui/textarea"
 import { useAuth } from "@/lib/auth-context"
 import { useGoalStore } from "@/lib/goal-store";
+import { useProfileStore } from "@/lib/profile-store";
 import GoogleAuthButton from "@/components/google-auth-button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { authedFetch } from "@/lib/api-client";
@@ -72,6 +73,10 @@ interface GeneratePlanRequestPayload {
   refinementInstruction?: string;
   existingPlanTasksForRefinement?: BackendTask[];
   userProgress?: UserProgressSignal;
+  // Existing-schedule hints (busy slots the AI should avoid) — sent for every
+  // /generate-plan call so the new plan doesn't collide with the user's
+  // current commitments.
+  busySlots?: { date: string; startTime: string; endTime: string; title: string }[];
 }
 
 // Shape returned by /chat-message — adds fields beyond the old contract.
@@ -129,8 +134,23 @@ export default function ChatInterface() {
   const { tasks: allTasks, addAIGeneratedTasks, applySyncResults } = useCalendarStore();
   const { isAuthenticated, getAccessToken, signInWithGoogle, signOut } = useAuth();
   const { goals, addGoal } = useGoalStore();
+  const { profile } = useProfileStore();
   const isMobile = useIsMobile();
   const auth = { getAccessToken, signInWithGoogle, signOut };
+
+  // Apply profile defaults (daily hours, preferred time) once they load, but
+  // don't overwrite anything the user has already provided this session.
+  useEffect(() => {
+    if (!profile) return;
+    setPlanRequestParams(prev => ({
+      ...(profile.defaultDailyHours && !prev.dailyHours ? { dailyHours: profile.defaultDailyHours } : {}),
+      ...(profile.defaultPreferredTime && profile.defaultPreferredTime !== "any" && !prev.preferredTime
+        ? { preferredTime: profile.defaultPreferredTime }
+        : {}),
+      ...prev,
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile?.defaultDailyHours, profile?.defaultPreferredTime]);
 
   // Build a UserProgressSignal from the user's Firestore tasks. Sent with every
   // /generate-plan call so the AI tunes the new plan to actual completion rate.
@@ -161,6 +181,21 @@ export default function ChatInterface() {
       recentlyCompleted: completedTitles,
       recentlyMissed: missed,
     };
+  };
+
+  // Active, future (or today's) tasks that aren't yet completed — sent to the
+  // AI as busy slots so the generated plan doesn't collide with the user's
+  // existing commitments. Capped at 50 entries to keep prompts compact.
+  const computeBusySlots = () => {
+    if (!allTasks || allTasks.length === 0) return undefined;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const future = allTasks
+      .filter(t => !t.completed && new Date(t.date + "T00:00:00") >= today)
+      .sort((a, b) => (a.date + a.startTime).localeCompare(b.date + b.startTime))
+      .slice(0, 50)
+      .map(t => ({ date: t.date, startTime: t.startTime, endTime: t.endTime, title: t.title }));
+    return future.length ? future : undefined;
   };
  
   const [messages, setMessages] = useState<FrontendMessage[]>([
@@ -377,6 +412,7 @@ export default function ChatInterface() {
       currentSkillLevel: planRequestParams.currentSkillLevel,
       chatHistoryForContext: mapMessagesToBackendHistory(messages),
       userProgress: computeProgressSignal(),
+      busySlots: computeBusySlots(),
     };
 
     if (!payload.goal || !payload.durationDays || !payload.startDate) {
@@ -559,6 +595,7 @@ const handleIntegratePlanToCalendar = async () => {
       refinementInstruction: refinementInput,
       existingPlanTasksForRefinement: currentGeneratedPlan.originalBackendTasks,
       userProgress: computeProgressSignal(),
+      busySlots: computeBusySlots(),
     };
     
     handleRequestPlanGeneration(refinementPayload);

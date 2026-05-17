@@ -12,7 +12,15 @@ import GoalCard from "@/components/goal-card";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import AddEditGoalDialog from "@/components/add-edit-goal-dialog"; // <-- Import the new component
+import AddEditGoalDialog from "@/components/add-edit-goal-dialog";
+import dynamic from "next/dynamic";
+
+// recharts adds ~100 kB to the bundle; load it lazily so the /goals route
+// stays light when the user has no goal selected.
+const GoalProgressChart = dynamic(() => import("@/components/goal-progress-chart"), {
+  ssr: false,
+  loading: () => <div className="h-44 flex items-center justify-center text-xs text-slate-400">Loading chart…</div>,
+});
 
 export default function GoalsPage() {
   const { goals, loading: goalsLoading } = useGoalStore();
@@ -84,6 +92,11 @@ export default function GoalsPage() {
               <CardTitle>{selectedGoal ? selectedGoal.title : "Select a Goal"}</CardTitle>
               <CardDescription>{selectedGoal ? "Here is the plan for this goal." : "Select a goal from the left to view its associated tasks."}</CardDescription>
             </CardHeader>
+            {selectedGoal && goalTasks.length > 0 && (
+              <div className="px-6 pb-2">
+                <GoalProgressChart tasks={goalTasks} />
+              </div>
+            )}
             <CardContent className="flex-1 overflow-hidden">
               <ScrollArea className="h-full">
                 <div className="space-y-3">

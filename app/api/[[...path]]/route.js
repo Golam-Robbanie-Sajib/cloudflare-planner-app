@@ -201,6 +201,12 @@ Field rules:
             if (otherParams.preferredTime) userPromptParts.push(`- Preferred Time of Day: ${otherParams.preferredTime}`);
             if (otherParams.currentSkillLevel) userPromptParts.push(`- Current Skill Level: ${otherParams.currentSkillLevel}`);
         }
+        if (Array.isArray(otherParams.busySlots) && otherParams.busySlots.length > 0) {
+            userPromptParts.push(`\n***BUSY SLOTS (the user already has these — do NOT schedule overlapping events; pick different times or different days)***`);
+            otherParams.busySlots.slice(0, 50).forEach((s) => {
+                userPromptParts.push(`- ${s.date} ${s.startTime}–${s.endTime}: ${s.title}`);
+            });
+        }
         if (otherParams.userProgress && typeof otherParams.userProgress === 'object') {
             const p = otherParams.userProgress;
             userPromptParts.push(`\n***USER PROGRESS SIGNAL (use this to calibrate difficulty/pace)***`);
@@ -353,6 +359,47 @@ app.post('/integrate-plan', async (c) => {
         // the canonical response is now `results` — one entry per input task.
         const calendarEventLinks = results.filter(r => r.status === 'synced').map(r => r.googleEventLink);
         return c.json({ message, results, calendarEventLinks });
+    } catch (error) { return handleServiceError(error, c); }
+});
+
+// PATCH a single Google Calendar event's start/end. Used by the drag-to-
+// reschedule UI on /calendar. We deliberately do NOT take the event id from
+// query params — the body is JSON so Hono+edge handles it consistently.
+app.post('/reschedule-event', async (c) => {
+    try {
+        const authHeader = c.req.header('authorization');
+        const accessToken = authHeader?.split(' ')[1];
+        if (!accessToken) return c.json({ detail: "Authorization header is missing" }, 401);
+        const { googleEventId, startTime, endTime } = await c.req.json();
+        if (!googleEventId || !ISO_LOOSE.test(startTime || '') || !ISO_LOOSE.test(endTime || '')) {
+            return c.json({ detail: "googleEventId, startTime and endTime (ISO) are required." }, 400);
+        }
+        if (new Date(endTime) <= new Date(startTime)) {
+            return c.json({ detail: "endTime must be after startTime." }, 400);
+        }
+        const url = `${CALENDAR_API_URL}/${encodeURIComponent(googleEventId)}`;
+        const response = await fetch(url, {
+            method: 'PATCH',
+            headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                start: { dateTime: startTime, timeZone: DEFAULT_TIMEZONE },
+                end: { dateTime: endTime, timeZone: DEFAULT_TIMEZONE },
+            }),
+        });
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            if (response.status === 401) {
+                const err = new Error(errorData.error?.message || "Google Calendar access expired.");
+                err.name = 'PermissionError';
+                throw err;
+            }
+            return c.json({ detail: errorData.error?.message || `HTTP ${response.status}` }, response.status);
+        }
+        const eventData = await response.json();
+        return c.json({ googleEventId: eventData.id, googleEventLink: eventData.htmlLink });
     } catch (error) { return handleServiceError(error, c); }
 });
 

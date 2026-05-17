@@ -19,6 +19,11 @@ export interface UserProfile {
     autoSync: boolean
     syncFrequency: "hourly" | "daily" | "manual"
   }
+  // Onboarding state and learning defaults captured during the first-run flow.
+  onboardedAt?: Timestamp
+  defaultDailyHours?: number
+  defaultPreferredTime?: "morning" | "afternoon" | "evening" | "any"
+  interests?: string[]
   createdAt: Timestamp
   updatedAt: Timestamp
 }

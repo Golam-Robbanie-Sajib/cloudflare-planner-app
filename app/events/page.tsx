@@ -18,13 +18,15 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { toast } from "@/components/ui/use-toast"
 import { useCalendarStore } from "@/lib/calendar-store"
 import { useGoalStore } from "@/lib/goal-store"
+import { useSyncRetry } from "@/hooks/use-sync-retry"
 import { type VariantProps } from "class-variance-authority"
-import { Target, AlertCircle, ExternalLink } from "lucide-react"
+import { Target, AlertCircle, ExternalLink, RefreshCw, Loader2 } from "lucide-react"
 
 export default function EventsPage() {
   const [isCreateEventOpen, setIsCreateEventOpen] = useState(false)
   const { tasks, addTask } = useCalendarStore()
   const { goals } = useGoalStore()
+  const { retry, retryingId } = useSyncRetry()
   const goalNameById = (id?: string) => id ? goals.find(g => g.id === id)?.title : undefined
 
   // ADDED: State management for the details dialog
@@ -261,6 +263,8 @@ export default function EventsPage() {
                     event={event}
                     badgeVariant={getBadgeVariant(event.type)}
                     handleShowDetails={handleShowDetails}
+                    onRetry={retry}
+                    retryingId={retryingId}
                   />
                 ))}
               </div>
@@ -343,12 +347,16 @@ function EventCard({
   event,
   badgeVariant,
   isPast = false,
-  handleShowDetails, // MODIFIED: Accept handler
+  handleShowDetails,
+  onRetry,
+  retryingId,
 }: {
   event: any
   badgeVariant: VariantProps<typeof badgeVariants>["variant"]
   isPast?: boolean
-  handleShowDetails: (event: any) => void // MODIFIED: Define handler type
+  handleShowDetails: (event: any) => void
+  onRetry?: (taskId: string) => void
+  retryingId?: string | null
 }) {
   return (
     <Card className={`card-colorful card-hover ${isPast ? "opacity-75" : ""} ${event.completed ? "opacity-60" : ""}`}>
@@ -437,11 +445,25 @@ function EventCard({
               </a>
             )}
           </div>
-          {!isPast && (
-            <Button variant="outline" size="sm" className="hover:bg-purple-50 hover:border-purple-300" onClick={() => handleShowDetails(event)}>
-              View
-            </Button>
-          )}
+          <div className="flex gap-1 items-center">
+            {event.syncStatus === "failed" && onRetry && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-amber-700 border-amber-300 hover:bg-amber-50"
+                onClick={(e) => { e.stopPropagation(); onRetry(event.id) }}
+                disabled={retryingId === event.id}
+              >
+                {retryingId === event.id ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <RefreshCw className="h-3 w-3 mr-1" />}
+                Retry sync
+              </Button>
+            )}
+            {!isPast && (
+              <Button variant="outline" size="sm" className="hover:bg-purple-50 hover:border-purple-300" onClick={() => handleShowDetails(event)}>
+                View
+              </Button>
+            )}
+          </div>
         </div>
       </CardFooter>
     </Card>

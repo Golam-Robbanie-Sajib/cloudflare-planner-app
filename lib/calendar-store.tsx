@@ -37,11 +37,7 @@ interface CalendarStore {
   // Returns the IDs of the tasks just written so the caller can update their
   // sync status after talking to Google Calendar.
   addAIGeneratedTasks: (tasks: AIGeneratedTaskInput[], goalId?: string) => Promise<string[]>
-  // Mark a batch of previously-added tasks with the result of their Google
-  // Calendar sync attempt.
   applySyncResults: (results: AISyncResult[]) => Promise<void>
-  // Retry a single failed sync — re-uploads to Google Calendar via /integrate-plan.
-  // (Hook left for UI to call; implementation lives in chat-interface for now.)
 }
 
 const CalendarContext = createContext<CalendarStore | undefined>(undefined)

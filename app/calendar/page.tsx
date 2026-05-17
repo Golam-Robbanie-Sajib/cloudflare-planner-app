@@ -13,20 +13,46 @@ import Link from "next/link"
 import { format, addDays, isToday, isTomorrow, parseISO } from "date-fns"
 import { useCalendarStore } from "@/lib/calendar-store"
 import { useGoalStore } from "@/lib/goal-store"
+import { useReschedule } from "@/hooks/use-reschedule"
+import { useSyncRetry } from "@/hooks/use-sync-retry"
 import { toast } from "@/components/ui/use-toast"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
-import { AlertCircle, RefreshCw, ExternalLink, Target } from "lucide-react"
+import { AlertCircle, RefreshCw, ExternalLink, Target, Loader2, GripVertical } from "lucide-react"
 
 export default function CalendarPage() {
   const { tasks, addTask, toggleTask, deleteTask, loading } = useCalendarStore();
   const { goals } = useGoalStore();
+  const { moveTo, movingId } = useReschedule();
+  const { retry, retryingId } = useSyncRetry();
   const goalNameById = (id?: string) => id ? goals.find(g => g.id === id)?.title : undefined;
   const [isCreateEventOpen, setIsCreateEventOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<any | null>(null)
   const [showEventDialog, setShowEventDialog] = useState(false)
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [hoveredEvent, setHoveredEvent] = useState<string | null>(null)
+  const [draggingId, setDraggingId] = useState<string | null>(null)
+  const [dragOverDate, setDragOverDate] = useState<string | null>(null)
+
+  const handleDragStart = (e: React.DragEvent, taskId: string) => {
+    setDraggingId(taskId);
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", taskId);
+  };
+  const handleDragOverDay = (e: React.DragEvent, dateStr: string) => {
+    if (!draggingId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (dragOverDate !== dateStr) setDragOverDate(dateStr);
+  };
+  const handleDropOnDay = async (e: React.DragEvent, dateStr: string) => {
+    e.preventDefault();
+    const id = e.dataTransfer.getData("text/plain") || draggingId;
+    setDraggingId(null);
+    setDragOverDate(null);
+    if (!id) return;
+    await moveTo(id, dateStr);
+  };
 
   // Convert tasks to events format for display, preserving goal + sync metadata.
   const events = tasks.map((task) => ({
@@ -239,7 +265,7 @@ export default function CalendarPage() {
       <div className="flex-1 p-6">
         <div className="mb-6">
           <h1 className="text-2xl font-bold">Calendar</h1>
-          <p className="text-muted-foreground">View your events for the next 14 days</p>
+          <p className="text-muted-foreground">View your events for the next 14 days. <span className="inline-flex items-center gap-1 text-xs"><GripVertical className="h-3 w-3" />drag a task to another day to reschedule</span></p>
         </div>
 
         {!loading && tasks.length === 0 && (
@@ -268,9 +294,17 @@ export default function CalendarPage() {
             const date = addDays(new Date(), i)
             const dayEvents = getEventsForDate(date)
             const isCurrentDay = isToday(date)
+            const dateStr = format(date, "yyyy-MM-dd")
+            const isDropTarget = dragOverDate === dateStr
 
             return (
-              <Card key={i} className={`h-fit ${isCurrentDay ? "ring-2 ring-primary" : ""}`}>
+              <Card
+                key={i}
+                className={`h-fit transition-all ${isCurrentDay ? "ring-2 ring-primary" : ""} ${isDropTarget ? "ring-2 ring-purple-400 bg-purple-50" : ""}`}
+                onDragOver={(e) => handleDragOverDay(e, dateStr)}
+                onDragLeave={() => { if (dragOverDate === dateStr) setDragOverDate(null) }}
+                onDrop={(e) => handleDropOnDay(e, dateStr)}
+              >
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm flex items-center justify-between">
                     <div>
@@ -288,12 +322,18 @@ export default function CalendarPage() {
                   <div className="space-y-2">
                     {dayEvents.length > 0 ? (
                       dayEvents.map((event) => (
-                        <div key={event.id} className="relative group">
+                        <div
+                          key={event.id}
+                          className={`relative group ${draggingId === event.id ? "opacity-40" : ""}`}
+                          draggable={!event.completed}
+                          onDragStart={(e) => handleDragStart(e, event.id)}
+                          onDragEnd={() => { setDraggingId(null); setDragOverDate(null) }}
+                        >
                           <div
                             className={`p-2 rounded-md border-l-4 transition-all duration-200 ${getPriorityColor(event.priority)} ${
                               event.completed
                                 ? "opacity-50 bg-muted/30 line-through"
-                                : "hover:bg-muted/50 cursor-pointer"
+                                : "hover:bg-muted/50 cursor-grab active:cursor-grabbing"
                             }`}
                             onMouseEnter={() => setHoveredEvent(event.id)}
                             onMouseLeave={() => setHoveredEvent(null)}
@@ -389,6 +429,18 @@ export default function CalendarPage() {
                                         <Info className="h-3 w-3 mr-2" />
                                         Details
                                       </Button>
+                                      {event.syncStatus === "failed" && (
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          className="w-full justify-start h-8 px-2 text-amber-700"
+                                          onClick={(e) => { e.stopPropagation(); retry(event.id) }}
+                                          disabled={retryingId === event.id}
+                                        >
+                                          {retryingId === event.id ? <Loader2 className="h-3 w-3 mr-2 animate-spin" /> : <RefreshCw className="h-3 w-3 mr-2" />}
+                                          Retry sync
+                                        </Button>
+                                      )}
                                       <Button
                                         variant="ghost"
                                         size="sm"

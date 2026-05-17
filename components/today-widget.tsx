@@ -5,9 +5,11 @@ import { useEffect, useMemo, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Check, Flame, BellRing, Bell, AlarmClock, CheckCheck, Target } from "lucide-react"
+import { Check, Flame, BellRing, Bell, AlarmClock, CheckCheck, Target, Timer } from "lucide-react"
 import { useCalendarStore } from "@/lib/calendar-store"
 import { useGoalStore } from "@/lib/goal-store"
+import FocusTimer from "@/components/focus-timer"
+import type { CalendarTask } from "@/lib/firestore-calendar"
 import { computeProgress, tomorrowDateString } from "@/lib/progress"
 import {
   checkAndFireNotifications,
@@ -28,6 +30,7 @@ export default function TodayWidget() {
   const { todayTasks, todayCompleted, todayTotal, overdueTasks, currentStreak, bestStreak } = stats
 
   const [perm, setPerm] = useState<PermissionState>("default")
+  const [focusTask, setFocusTask] = useState<CalendarTask | null>(null)
 
   useEffect(() => {
     setPerm(getPermissionState())
@@ -160,15 +163,21 @@ export default function TodayWidget() {
                   </div>
                 </div>
                 {!task.completed && (
-                  <Button variant="ghost" size="sm" onClick={() => snooze(task.id)} title="Move to tomorrow">
-                    <AlarmClock className="h-3.5 w-3.5 mr-1" />Tomorrow
-                  </Button>
+                  <div className="flex gap-1">
+                    <Button variant="ghost" size="sm" onClick={() => setFocusTask(task)} title="Start focus timer">
+                      <Timer className="h-3.5 w-3.5 mr-1" />Focus
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => snooze(task.id)} title="Move to tomorrow">
+                      <AlarmClock className="h-3.5 w-3.5 mr-1" />Tomorrow
+                    </Button>
+                  </div>
                 )}
               </div>
             ))}
           </div>
         )}
       </CardContent>
+      <FocusTimer task={focusTask} open={!!focusTask} onOpenChange={(o) => { if (!o) setFocusTask(null) }} />
     </Card>
   )
 }
