@@ -10,6 +10,7 @@ import { AuthProvider } from "@/lib/auth-context";
 import { CalendarProvider } from "@/lib/calendar-store";
 import { Toaster } from "@/components/ui/toaster"
 import { ProfileProvider } from "@/lib/profile-store";
+import { ThemeProvider } from "@/components/theme-provider";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -43,20 +44,22 @@ export default function RootLayout({
   }
 
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body className={inter.className}>
-        <GoogleOAuthProvider clientId={clientId}>
-          <AuthProvider>
-            <ProfileProvider>
-              <GoalProvider>
-                <CalendarProvider>
-                  {children}
-                </CalendarProvider>
-              </GoalProvider>
-            </ProfileProvider>
-            <Toaster />
-          </AuthProvider>
-        </GoogleOAuthProvider>
+        <ThemeProvider attribute="class" defaultTheme="light" enableSystem disableTransitionOnChange>
+          <GoogleOAuthProvider clientId={clientId}>
+            <AuthProvider>
+              <ProfileProvider>
+                <GoalProvider>
+                  <CalendarProvider>
+                    {children}
+                  </CalendarProvider>
+                </GoalProvider>
+              </ProfileProvider>
+              <Toaster />
+            </AuthProvider>
+          </GoogleOAuthProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

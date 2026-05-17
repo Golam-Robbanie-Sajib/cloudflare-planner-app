@@ -265,13 +265,21 @@ export default function EventsPage() {
                 ))}
               </div>
             ) : (
-              <div className="flex h-[200px] items-center justify-center rounded-xl border-2 border-dashed border-slate-300 bg-white">
-                <div className="text-center">
-                  <p className="text-sm text-muted-foreground">No upcoming events found</p>
-                  <Button variant="outline" className="mt-2" onClick={() => setIsCreateEventOpen(true)}>
-                    <Plus className="mr-2 h-4 w-4" />
-                    Create Event
-                  </Button>
+              <div className="flex h-[260px] items-center justify-center rounded-xl border-2 border-dashed border-slate-300 bg-white">
+                <div className="text-center max-w-sm px-4">
+                  <p className="text-sm font-medium text-slate-700">No upcoming events yet</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Plan a learning goal with the AI assistant — every task lands here automatically. Or add a one-off event.
+                  </p>
+                  <div className="mt-4 flex gap-2 justify-center">
+                    <Link href="/dashboard">
+                      <Button className="btn-purple">Open AI assistant</Button>
+                    </Link>
+                    <Button variant="outline" onClick={() => setIsCreateEventOpen(true)}>
+                      <Plus className="mr-2 h-4 w-4" />
+                      New Event
+                    </Button>
+                  </div>
                 </div>
               </div>
             )}
@@ -292,7 +300,7 @@ export default function EventsPage() {
               </div>
             ) : (
               <div className="flex h-[200px] items-center justify-center rounded-xl border-2 border-dashed border-slate-300 bg-white">
-                <p className="text-sm text-muted-foreground">No past events found</p>
+                <p className="text-sm text-muted-foreground">No past events yet — your history will show up here as you complete tasks.</p>
               </div>
             )}
           </TabsContent>

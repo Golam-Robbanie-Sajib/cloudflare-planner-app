@@ -48,6 +48,25 @@ export default function GoalsPage() {
           <div className="space-y-4">
             {(goalsLoading || tasksLoading) ? (
               <p>Loading goals...</p>
+            ) : goals.length === 0 ? (
+              <Card className="card-colorful border-dashed">
+                <CardContent className="py-8 text-center">
+                  <p className="text-sm font-medium text-slate-700">No goals yet</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Goals are created automatically when you build a plan with the AI — or add one manually below.
+                  </p>
+                  <div className="mt-4 flex gap-2 justify-center">
+                    <Link href="/dashboard">
+                      <Button className="btn-purple" size="sm">Plan with AI</Button>
+                    </Link>
+                    <AddEditGoalDialog>
+                      <Button variant="outline" size="sm">
+                        <Plus className="h-4 w-4 mr-1" /> Manual
+                      </Button>
+                    </AddEditGoalDialog>
+                  </div>
+                </CardContent>
+              </Card>
             ) : (
               goals.map(goal => (
                 <div key={goal.id} onClick={() => setSelectedGoal(goal)} className="cursor-pointer">

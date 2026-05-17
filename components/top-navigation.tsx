@@ -17,6 +17,7 @@ import {
 import Link from "next/link"
 import GoogleAuthButton from "@/components/google-auth-button"
 import { useAuth } from "@/lib/auth-context"
+import ThemeToggle from "@/components/theme-toggle"
 
 export default function TopNavigation() {
   const { isAuthenticated, userInfo, signOut } = useAuth()
@@ -64,6 +65,8 @@ export default function TopNavigation() {
             <Settings className="h-5 w-5" />
           </Button>
         </Link>
+
+        <ThemeToggle />
 
         {/* User dropdown - only show if authenticated */}
         {isAuthenticated && userInfo && (

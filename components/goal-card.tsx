@@ -7,9 +7,10 @@ import { useGoalStore } from "@/lib/goal-store"; // <-- Import useGoalStore
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
-import { Edit, Trash2 } from "lucide-react";
+import { Edit, Trash2, Wand2 } from "lucide-react";
+import { useRouter } from "next/navigation";
 import AddEditGoalDialog from "./add-edit-goal-dialog";
-import { toast } from "@/components/ui/use-toast" // <-- Import the dialog
+import { toast } from "@/components/ui/use-toast"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -28,7 +29,8 @@ interface GoalCardProps {
 
 export default function GoalCard({ goal }: GoalCardProps) {
   const { tasks } = useCalendarStore();
-  const { deleteGoal } = useGoalStore(); // <-- Get deleteGoal function
+  const { deleteGoal } = useGoalStore();
+  const router = useRouter();
 
   const relevantTasks = tasks.filter(task => task.goalId === goal.id);
   const completedTasks = relevantTasks.filter(task => task.completed);
@@ -38,6 +40,17 @@ export default function GoalCard({ goal }: GoalCardProps) {
     deleteGoal(goal.id);
     toast({ title: "Goal Deleted", description: `"${goal.title}" has been removed.` });
   }
+
+  // Navigate to the dashboard with a regen query so the chat-interface can
+  // auto-kick a refinement conversation seeded with this goal's context.
+  const handleRegenerate = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const params = new URLSearchParams({
+      regen: goal.id,
+      goal: goal.title,
+    });
+    router.push(`/dashboard?${params.toString()}`);
+  };
 
   return (
     <Card className="flex flex-col h-full card-colorful card-hover">
@@ -57,8 +70,10 @@ export default function GoalCard({ goal }: GoalCardProps) {
           </div>
         </div>
       </CardContent>
-      <CardFooter className="flex justify-end gap-2">
-        {/* THIS IMPLEMENTS the "Edit" button */}
+      <CardFooter className="flex justify-end gap-2 flex-wrap">
+        <Button variant="outline" size="sm" onClick={handleRegenerate} className="text-purple-700 border-purple-300 hover:bg-purple-50">
+          <Wand2 className="h-4 w-4 mr-1" /> Regenerate
+        </Button>
         <AddEditGoalDialog goal={goal}>
           <Button variant="outline" size="sm">
             <Edit className="h-4 w-4 mr-1" /> Edit

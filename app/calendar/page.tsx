@@ -242,6 +242,26 @@ export default function CalendarPage() {
           <p className="text-muted-foreground">View your events for the next 14 days</p>
         </div>
 
+        {!loading && tasks.length === 0 && (
+          <div className="mb-6 flex items-center justify-center rounded-xl border-2 border-dashed border-slate-300 bg-white py-10">
+            <div className="text-center max-w-sm px-4">
+              <p className="text-sm font-medium text-slate-700">No events scheduled yet</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Tell the AI assistant what you want to learn — it'll generate a plan and the tasks will show up here.
+              </p>
+              <div className="mt-4 flex gap-2 justify-center">
+                <Link href="/dashboard">
+                  <Button className="btn-purple" size="sm">Open AI assistant</Button>
+                </Link>
+                <Button variant="outline" size="sm" onClick={() => setShowCreateDialog(true)}>
+                  <Plus className="mr-1 h-4 w-4" />
+                  New Event
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Calendar Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-7 gap-4">
           {Array.from({ length: 14 }, (_, i) => {

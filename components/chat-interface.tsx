@@ -4,6 +4,7 @@
 
 import type React from "react"
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useSearchParams, useRouter } from "next/navigation";
 import { useState, useRef, useEffect } from "react"
 import { Send, CalendarIcon, Bot, User, Plus, Loader2, RefreshCw, Edit } from "lucide-react"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
@@ -186,6 +187,25 @@ export default function ChatInterface() {
   const [selectedGoalId, setSelectedGoalId] = useState("none");
 
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
+  // When the user clicks "Regenerate" on a goal card, the dashboard URL gets
+  // ?regen=<goalId>&goal=<title>. On mount we drop a prefilled refinement
+  // prompt into the chat so the AI knows which goal to re-plan, then strip
+  // the query so a refresh doesn't re-trigger it.
+  useEffect(() => {
+    const regenId = searchParams.get("regen");
+    const goalTitle = searchParams.get("goal");
+    if (!regenId || !goalTitle) return;
+    setChatInput(`I'd like to regenerate or adjust the plan for my goal: "${goalTitle}". Please consider my progress so far and propose what to do next.`);
+    setSuggestedGoalTitle(goalTitle);
+    setPlanRequestParams(prev => ({ ...prev, goal: goalTitle }));
+    // Strip the query params without adding a history entry.
+    router.replace("/dashboard");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (scrollAreaRef.current) {
