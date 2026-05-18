@@ -19,6 +19,16 @@ import { toast } from "@/components/ui/use-toast"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { AlertCircle, RefreshCw, ExternalLink, Target, Loader2, GripVertical } from "lucide-react"
+import {
+  DndContext,
+  PointerSensor,
+  TouchSensor,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core"
 
 export default function CalendarPage() {
   const { tasks, addTask, toggleTask, deleteTask, loading } = useCalendarStore();
@@ -32,27 +42,22 @@ export default function CalendarPage() {
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [hoveredEvent, setHoveredEvent] = useState<string | null>(null)
   const [draggingId, setDraggingId] = useState<string | null>(null)
-  const [dragOverDate, setDragOverDate] = useState<string | null>(null)
 
-  const handleDragStart = (e: React.DragEvent, taskId: string) => {
-    setDraggingId(taskId);
-    e.dataTransfer.effectAllowed = "move";
-    e.dataTransfer.setData("text/plain", taskId);
-  };
-  const handleDragOverDay = (e: React.DragEvent, dateStr: string) => {
-    if (!draggingId) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    if (dragOverDate !== dateStr) setDragOverDate(dateStr);
-  };
-  const handleDropOnDay = async (e: React.DragEvent, dateStr: string) => {
-    e.preventDefault();
-    const id = e.dataTransfer.getData("text/plain") || draggingId;
-    setDraggingId(null);
-    setDragOverDate(null);
-    if (!id) return;
-    await moveTo(id, dateStr);
-  };
+  // @dnd-kit sensors: PointerSensor handles mouse + pen; TouchSensor enables
+  // touch with a 200ms hold to avoid hijacking taps. Activation distance
+  // prevents accidental drags when the user is just scrolling.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
+  )
+
+  const handleDragEnd = async (event: DragEndEvent) => {
+    setDraggingId(null)
+    const taskId = event.active.id as string
+    const dateStr = event.over?.id as string | undefined
+    if (!taskId || !dateStr) return
+    await moveTo(taskId, dateStr)
+  }
 
   // Convert tasks to events format for display, preserving goal + sync metadata.
   const events = tasks.map((task) => ({
@@ -288,22 +293,26 @@ export default function CalendarPage() {
           </div>
         )}
 
-        {/* Calendar Grid */}
+        {/* Calendar Grid wrapped in DndContext so any event card can be
+           dragged into any day card. Sensors handle both pointer + touch. */}
+        <DndContext
+          sensors={sensors}
+          onDragStart={(e) => setDraggingId(e.active.id as string)}
+          onDragCancel={() => setDraggingId(null)}
+          onDragEnd={handleDragEnd}
+        >
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-7 gap-4">
           {Array.from({ length: 14 }, (_, i) => {
             const date = addDays(new Date(), i)
             const dayEvents = getEventsForDate(date)
             const isCurrentDay = isToday(date)
             const dateStr = format(date, "yyyy-MM-dd")
-            const isDropTarget = dragOverDate === dateStr
 
             return (
-              <Card
+              <DayDroppable
                 key={i}
-                className={`h-fit transition-all ${isCurrentDay ? "ring-2 ring-primary" : ""} ${isDropTarget ? "ring-2 ring-purple-400 bg-purple-50" : ""}`}
-                onDragOver={(e) => handleDragOverDay(e, dateStr)}
-                onDragLeave={() => { if (dragOverDate === dateStr) setDragOverDate(null) }}
-                onDrop={(e) => handleDropOnDay(e, dateStr)}
+                dateStr={dateStr}
+                isCurrentDay={isCurrentDay}
               >
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm flex items-center justify-between">
@@ -322,12 +331,11 @@ export default function CalendarPage() {
                   <div className="space-y-2">
                     {dayEvents.length > 0 ? (
                       dayEvents.map((event) => (
-                        <div
+                        <DraggableEvent
                           key={event.id}
-                          className={`relative group ${draggingId === event.id ? "opacity-40" : ""}`}
-                          draggable={!event.completed}
-                          onDragStart={(e) => handleDragStart(e, event.id)}
-                          onDragEnd={() => { setDraggingId(null); setDragOverDate(null) }}
+                          taskId={event.id}
+                          disabled={event.completed}
+                          isDragging={draggingId === event.id}
                         >
                           <div
                             className={`p-2 rounded-md border-l-4 transition-all duration-200 ${getPriorityColor(event.priority)} ${
@@ -459,7 +467,7 @@ export default function CalendarPage() {
                               </div>
                             )}
                           </div>
-                        </div>
+                        </DraggableEvent>
                       ))
                     ) : (
                       <div className="text-center py-4">
@@ -468,10 +476,11 @@ export default function CalendarPage() {
                     )}
                   </div>
                 </CardContent>
-              </Card>
+              </DayDroppable>
             )
           })}
         </div>
+        </DndContext>
       </div>
 
       {/* Event Detail Dialog */}
@@ -637,6 +646,67 @@ export default function CalendarPage() {
           )}
         </DialogContent>
       </Dialog>
+    </div>
+  )
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// @dnd-kit primitives. Day cards are droppables (id = "YYYY-MM-DD"); event
+// cards are draggables (id = task.id). The DndContext above drives the
+// pointer + touch sensors and triggers moveTo() on drop. Splitting these out
+// of the main component keeps the JSX in CalendarPage readable.
+
+function DayDroppable({
+  dateStr,
+  isCurrentDay,
+  children,
+}: {
+  dateStr: string
+  isCurrentDay: boolean
+  children: React.ReactNode
+}) {
+  const { isOver, setNodeRef } = useDroppable({ id: dateStr })
+  return (
+    <Card
+      ref={setNodeRef}
+      className={`h-fit transition-all ${isCurrentDay ? "ring-2 ring-primary" : ""} ${isOver ? "ring-2 ring-purple-400 bg-purple-50 dark:bg-purple-950" : ""}`}
+    >
+      {children}
+    </Card>
+  )
+}
+
+function DraggableEvent({
+  taskId,
+  disabled,
+  isDragging,
+  children,
+}: {
+  taskId: string
+  disabled: boolean
+  isDragging: boolean
+  children: React.ReactNode
+}) {
+  const { attributes, listeners, setNodeRef, transform } = useDraggable({
+    id: taskId,
+    disabled,
+  })
+  // Apply the transform so the dragged element follows the pointer. Drop a
+  // touch-action: none on the node so touchscreens don't fight the gesture.
+  const style: React.CSSProperties = {
+    transform: transform ? `translate3d(${transform.x}px, ${transform.y}px, 0)` : undefined,
+    opacity: isDragging ? 0.5 : 1,
+    touchAction: disabled ? "auto" : "none",
+  }
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className="relative group"
+      {...listeners}
+      {...attributes}
+    >
+      {children}
     </div>
   )
 }
