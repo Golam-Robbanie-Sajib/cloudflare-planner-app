@@ -61,7 +61,7 @@ export default function FriendsPage() {
       const slug = profile.publicProfileSlug || newProfileSlug()
       await publishProfile({
         slug,
-        ownerEmail: userInfo.email,
+        ownerUid: userInfo.uid,
         displayName: userInfo.name,
         picture: userInfo.picture,
         currentStreak: myStats.currentStreak,
@@ -136,7 +136,7 @@ export default function FriendsPage() {
   const leaderboard = useMemo(() => {
     const me = userInfo ? {
       slug: profile?.publicProfileSlug ?? "_me",
-      ownerEmail: userInfo.email,
+      ownerUid: userInfo.uid,
       displayName: userInfo.name + " (you)",
       picture: userInfo.picture,
       currentStreak: myStats.currentStreak,
@@ -225,7 +225,7 @@ export default function FriendsPage() {
             {leaderboard.length === 0 ? (
               <p className="text-sm text-slate-500">Add friends to see a leaderboard.</p>
             ) : leaderboard.map((p, i) => {
-              const isMe = p.ownerEmail === userInfo?.email
+              const isMe = p.ownerUid === userInfo?.uid
               return (
                 <div key={p.slug} className="flex items-center gap-3 p-2 rounded-md border bg-white dark:bg-slate-900">
                   <span className="text-sm font-bold text-slate-500 w-5 text-center">{i + 1}</span>

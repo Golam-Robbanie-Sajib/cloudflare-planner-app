@@ -62,13 +62,13 @@ export default function GoalCard({ goal }: GoalCardProps) {
   // is high-entropy; treat it as a capability token, not a secret.
   const handleShare = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!userInfo?.email) return;
+    if (!userInfo?.uid) return;
     setSharing(true);
     try {
       const slug = newShareSlug();
       await publishPlan({
         slug,
-        ownerEmail: userInfo.email,
+        ownerUid: userInfo.uid,
         ownerName: userInfo.name || "A learner",
         goalTitle: goal.title,
         goalDescription: goal.description || "",

@@ -8,6 +8,7 @@ import { auth, googleProvider } from "./firebase"
 import { toast } from "@/components/ui/use-toast"
 
 interface UserInfo {
+  uid: string
   email: string
   name: string
   picture: string
@@ -87,14 +88,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new Error("Google sign-in failed. Please try again.");
       }
 
-      const { displayName, email, photoURL } = result.user;
+      const { uid, displayName, email, photoURL } = result.user;
       const accessToken = credential.accessToken;
 
-      if (!displayName || !email) {
+      if (!uid || !displayName || !email) {
         throw new Error("User information is missing from Google response.");
       }
 
       const newUserInfo: UserInfo = {
+        uid,
         name: displayName,
         email: email,
         picture: photoURL || "",

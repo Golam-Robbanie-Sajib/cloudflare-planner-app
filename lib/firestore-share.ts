@@ -26,7 +26,9 @@ export interface PublicPlanTask {
 
 export interface PublicPlan {
   slug: string
-  ownerEmail: string
+  // Firebase Auth UID of the publishing user — must match request.auth.uid
+  // for the rule to allow write. Kept distinct from ownerName / contact info.
+  ownerUid: string
   ownerName: string
   goalTitle: string
   goalDescription: string

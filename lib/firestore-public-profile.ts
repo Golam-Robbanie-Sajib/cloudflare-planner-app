@@ -10,7 +10,9 @@ import { db } from "./firebase"
 
 export interface PublicProfile {
   slug: string
-  ownerEmail: string
+  // Firebase Auth UID of the publishing user — must match request.auth.uid
+  // for the rule to allow write.
+  ownerUid: string
   displayName: string
   picture?: string
   currentStreak: number

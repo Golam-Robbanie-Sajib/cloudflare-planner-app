@@ -60,24 +60,24 @@ export function CalendarProvider({ children }: { children: ReactNode }) {
   const { userInfo, isAuthenticated } = useAuth()
 
   useEffect(() => {
-    if (!isAuthenticated || !userInfo?.email) {
+    if (!isAuthenticated || !userInfo?.uid) {
       setTasks([])
       setLoading(false)
       return
     }
 
-    const userId = userInfo.email
+    const userId = userInfo.uid
     const unsubscribe = subscribeToTasks(userId, (updatedTasks) => {
       setTasks(updatedTasks)
       setLoading(false)
     })
 
     return unsubscribe
-  }, [isAuthenticated, userInfo?.email])
+  }, [isAuthenticated, userInfo?.uid])
 
   const addTask = async (taskData: Omit<CalendarTask, 'id' | 'createdAt' | 'updatedAt'>): Promise<string | null> => {
-    if (!userInfo?.email) return null
-    const id = await addTaskToFirestore(userInfo.email, {
+    if (!userInfo?.uid) return null
+    const id = await addTaskToFirestore(userInfo.uid, {
       ...taskData,
       source: taskData.source ?? "user",
       synced: taskData.synced ?? false,
@@ -86,28 +86,28 @@ export function CalendarProvider({ children }: { children: ReactNode }) {
   }
 
   const updateTask = async (id: string, updates: Partial<CalendarTask>) => {
-    if (!userInfo?.email) return
-    await updateTaskInFirestore(userInfo.email, id, updates)
+    if (!userInfo?.uid) return
+    await updateTaskInFirestore(userInfo.uid, id, updates)
   }
 
   const toggleTask = async (id: string) => {
     const task = tasks.find(t => t.id === id)
-    if (!task || !userInfo?.email) return
+    if (!task || !userInfo?.uid) return
 
     const nowDone = !task.completed
-    await updateTaskInFirestore(userInfo.email, id, {
+    await updateTaskInFirestore(userInfo.uid, id, {
       completed: nowDone,
       completedAt: nowDone ? Timestamp.now() : null,
     })
   }
 
   const deleteTask = async (id: string) => {
-    if (!userInfo?.email) return
-    await deleteTaskFromFirestore(userInfo.email, id)
+    if (!userInfo?.uid) return
+    await deleteTaskFromFirestore(userInfo.uid, id)
   }
 
   const addAIGeneratedTasks = async (aiTasks: AIGeneratedTaskInput[], goalId?: string): Promise<string[]> => {
-    if (!userInfo?.email) return []
+    if (!userInfo?.uid) return []
 
     const ids: string[] = []
     for (const task of aiTasks) {
@@ -118,7 +118,7 @@ export function CalendarProvider({ children }: { children: ReactNode }) {
       const end = parseIsoSafely(task.endTime)
       if (!start || !end || end <= start) continue
 
-      const id = await addTaskToFirestore(userInfo.email, {
+      const id = await addTaskToFirestore(userInfo.uid, {
         title: task.summary,
         description: task.description || "",
         date: task.startTime.split('T')[0],
@@ -140,10 +140,10 @@ export function CalendarProvider({ children }: { children: ReactNode }) {
   }
 
   const applySyncResults = async (results: AISyncResult[]) => {
-    if (!userInfo?.email) return
+    if (!userInfo?.uid) return
     await Promise.all(
       results.map((r) =>
-        updateTaskInFirestore(userInfo.email!, r.taskId, {
+        updateTaskInFirestore(userInfo.uid!, r.taskId, {
           syncStatus: r.syncStatus,
           synced: r.syncStatus === "synced",
           ...(r.googleEventId && { googleEventId: r.googleEventId }),
