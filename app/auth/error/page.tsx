@@ -1,12 +1,23 @@
 "use client"
 
+import { Suspense } from "react"
 import { useSearchParams } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { AlertCircle } from "lucide-react"
 import Link from "next/link"
 
+// useSearchParams forces this subtree to be CSR — Next requires a Suspense
+// boundary so the page can still prerender as static HTML.
 export default function AuthErrorPage() {
+  return (
+    <Suspense fallback={null}>
+      <AuthErrorContent />
+    </Suspense>
+  )
+}
+
+function AuthErrorContent() {
   const searchParams = useSearchParams()
   const error = searchParams.get("error") || "unknown"
 
