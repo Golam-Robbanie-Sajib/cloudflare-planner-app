@@ -12,6 +12,7 @@ import { handle } from "hono/vercel"
 import { cors } from "hono/cors"
 import { trimTrailingSlash } from "hono/trailing-slash"
 import { ZodError, type ZodSchema } from "zod"
+import { hit as rateLimitHit, keyForRequest } from "@/lib/rate-limit"
 
 import {
   BackendTaskSchema,
@@ -459,6 +460,36 @@ app.use(
     allowHeaders: ["Content-Type", "Authorization"],
   }),
 )
+
+// Per-route rate limits (calls per minute, per-user via Authorization
+// header, falling back to IP). LLM routes are the expensive ones — small
+// budgets. Calendar reschedule is light, gets a higher budget.
+const RATE_LIMITS: Record<string, { limit: number; windowSec: number }> = {
+  "/api/chat-message": { limit: 30, windowSec: 60 },
+  "/api/generate-plan": { limit: 10, windowSec: 60 },
+  "/api/generate-plan-stream": { limit: 10, windowSec: 60 },
+  "/api/generate-quiz": { limit: 20, windowSec: 60 },
+  "/api/integrate-plan": { limit: 20, windowSec: 60 },
+  "/api/reschedule-event": { limit: 60, windowSec: 60 },
+}
+
+app.use("*", async (c, next) => {
+  const path = new URL(c.req.url).pathname
+  const cfg = RATE_LIMITS[path]
+  if (!cfg) return next()
+  const key = keyForRequest(new Headers(c.req.raw.headers), path)
+  const r = rateLimitHit(key, cfg.limit, cfg.windowSec)
+  c.header("X-RateLimit-Limit", String(cfg.limit))
+  c.header("X-RateLimit-Remaining", String(r.remaining))
+  c.header("X-RateLimit-Reset", String(Math.ceil(r.resetMs / 1000)))
+  if (!r.allowed) {
+    return c.json(
+      { detail: `Too many requests. Retry in ${Math.ceil(r.resetMs / 1000)}s.` },
+      429,
+    )
+  }
+  return next()
+})
 
 app.post("/chat-message", async (c) => {
   try {

@@ -1,15 +1,17 @@
 //lib/firestore-calendar.ts
-import { 
-  collection, 
-  doc, 
-  addDoc, 
-  updateDoc, 
-  deleteDoc, 
-  getDocs, 
-  onSnapshot, 
-  query, 
+import {
+  collection,
+  doc,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  getDocs,
+  onSnapshot,
+  query,
   orderBy,
-  Timestamp 
+  where,
+  Timestamp,
+  type QueryConstraint,
 } from "firebase/firestore"
 import { db } from "./firebase"
 
@@ -106,15 +108,47 @@ export const getTasks = async (userId: string): Promise<CalendarTask[]> => {
   } as CalendarTask))
 }
 
-// Subscribe to real-time task updates
-export const subscribeToTasks = (userId: string, callback: (tasks: CalendarTask[]) => void) => {
+// Subscribe to real-time task updates within a sliding window. Defaults to
+// 60 days back / 90 days forward, which covers everything the UI shows
+// (Today widget, 14-day calendar grid, /events past tab, /goals progress
+// chart) without subscribing to every task the user has ever created.
+//
+// `windowDaysBack` / `windowDaysAhead` can be tuned by callers that need
+// more. Pass null for either side to disable that bound (e.g. an export
+// flow that needs the full history).
+export const subscribeToTasks = (
+  userId: string,
+  callback: (tasks: CalendarTask[]) => void,
+  opts: { windowDaysBack?: number | null; windowDaysAhead?: number | null } = {},
+) => {
   const tasksRef = getUserTasksCollection(userId)
-  const q = query(tasksRef, orderBy('date', 'asc'))
-  
+  const { windowDaysBack = 60, windowDaysAhead = 90 } = opts
+
+  const toDayKey = (d: Date) => {
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, "0")
+    const day = String(d.getDate()).padStart(2, "0")
+    return `${y}-${m}-${day}`
+  }
+
+  const constraints: QueryConstraint[] = [orderBy("date", "asc")]
+  if (windowDaysBack != null) {
+    const past = new Date()
+    past.setDate(past.getDate() - windowDaysBack)
+    constraints.unshift(where("date", ">=", toDayKey(past)))
+  }
+  if (windowDaysAhead != null) {
+    const future = new Date()
+    future.setDate(future.getDate() + windowDaysAhead)
+    constraints.push(where("date", "<=", toDayKey(future)))
+  }
+
+  const q = query(tasksRef, ...constraints)
+
   return onSnapshot(q, (snapshot) => {
     const tasks = snapshot.docs.map(doc => ({
       id: doc.id,
-      ...doc.data()
+      ...doc.data(),
     } as CalendarTask))
     callback(tasks)
   })

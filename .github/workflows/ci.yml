@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Run only the latest commit's job per branch — old runs get cancelled
+# when new commits land.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Type-check + build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Lint
+        run: npm run lint -- --max-warnings=0
+        # Don't fail the job on lint until the repo's existing warnings are
+        # cleaned up; surface them via the step summary instead.
+        continue-on-error: true
+
+      # The build step runs the full Next type-check pass + bundle
+      # generation. Build env vars below are placeholders — real deploy
+      # values come from Cloudflare Pages.
+      - name: Build
+        run: npm run build
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:3000/api
+          NEXT_PUBLIC_GOOGLE_CLIENT_ID: ci-placeholder
+          NEXT_PUBLIC_FIREBASE_API_KEY: ci-placeholder
+          NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ci.example.com
+          NEXT_PUBLIC_FIREBASE_PROJECT_ID: ci-project
+          NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ci.appspot.com
+          NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: "0"
+          NEXT_PUBLIC_FIREBASE_APP_ID: "ci"
+          NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID: ""

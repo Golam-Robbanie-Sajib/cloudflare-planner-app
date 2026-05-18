@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import GoalCard from "@/components/goal-card";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import AddEditGoalDialog from "@/components/add-edit-goal-dialog";
 import dynamic from "next/dynamic";
@@ -55,7 +56,18 @@ export default function GoalsPage() {
         <ScrollArea className="lg:col-span-1 h-full">
           <div className="space-y-4">
             {(goalsLoading || tasksLoading) ? (
-              <p>Loading goals...</p>
+              <div className="space-y-3">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <Card key={i} className="card-colorful">
+                    <CardContent className="p-4 space-y-3">
+                      <Skeleton className="h-4 w-2/3" />
+                      <Skeleton className="h-3 w-full" />
+                      <Skeleton className="h-2 w-full" />
+                      <Skeleton className="h-3 w-1/3" />
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
             ) : goals.length === 0 ? (
               <Card className="card-colorful border-dashed">
                 <CardContent className="py-8 text-center">
