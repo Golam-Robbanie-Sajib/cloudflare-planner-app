@@ -18,6 +18,11 @@ export interface AIGeneratedTaskInput {
   description?: string | null
   startTime: string
   endTime: string
+  resources?: {
+    title: string
+    url?: string
+    type: "article" | "video" | "course" | "book" | "docs" | "tool" | "other"
+  }[]
 }
 
 export interface AISyncResult {
@@ -127,6 +132,7 @@ export function CalendarProvider({ children }: { children: ReactNode }) {
         synced: false,
         syncStatus: "pending",
         ...(goalId && { goalId }),
+        ...(task.resources && task.resources.length ? { resources: task.resources } : {}),
       })
       ids.push(id)
     }

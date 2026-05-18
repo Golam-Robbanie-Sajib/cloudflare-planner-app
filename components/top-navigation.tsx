@@ -2,7 +2,7 @@
 
 "use client"
 
-import { Settings, Calendar, MessageSquare, TrendingUp } from "lucide-react"
+import { Settings, Calendar, MessageSquare, TrendingUp, Users } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useRouter } from "next/navigation";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -57,6 +57,12 @@ export default function TopNavigation() {
         <Link href="/events">
           <Button variant="ghost" size="icon" className="hover:bg-blue-100 hover:text-blue-600">
             <MessageSquare className="h-5 w-5" />
+          </Button>
+        </Link>
+
+        <Link href="/friends">
+          <Button variant="ghost" size="icon" className="hover:bg-pink-100 hover:text-pink-600">
+            <Users className="h-5 w-5" />
           </Button>
         </Link>
 

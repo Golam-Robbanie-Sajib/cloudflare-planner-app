@@ -9,6 +9,7 @@ import { Check, Flame, BellRing, Bell, AlarmClock, CheckCheck, Target, Timer } f
 import { useCalendarStore } from "@/lib/calendar-store"
 import { useGoalStore } from "@/lib/goal-store"
 import FocusTimer from "@/components/focus-timer"
+import TaskQuizDialog from "@/components/task-quiz-dialog"
 import type { CalendarTask } from "@/lib/firestore-calendar"
 import { computeProgress, tomorrowDateString } from "@/lib/progress"
 import {
@@ -31,6 +32,7 @@ export default function TodayWidget() {
 
   const [perm, setPerm] = useState<PermissionState>("default")
   const [focusTask, setFocusTask] = useState<CalendarTask | null>(null)
+  const [quizTask, setQuizTask] = useState<CalendarTask | null>(null)
 
   useEffect(() => {
     setPerm(getPermissionState())
@@ -139,7 +141,13 @@ export default function TodayWidget() {
                 )}
               >
                 <button
-                  onClick={() => toggleTask(task.id)}
+                  onClick={() => {
+                    const wasIncomplete = !task.completed
+                    toggleTask(task.id)
+                    // Offer a quick comprehension check the first time a task
+                    // is marked done. Skip for very short / non-learning tasks.
+                    if (wasIncomplete) setQuizTask(task)
+                  }}
                   className={cn(
                     "h-5 w-5 rounded border flex-shrink-0 flex items-center justify-center transition-colors",
                     task.completed ? "bg-green-500 border-green-500" : "border-slate-300 hover:border-purple-400",
@@ -178,6 +186,13 @@ export default function TodayWidget() {
         )}
       </CardContent>
       <FocusTimer task={focusTask} open={!!focusTask} onOpenChange={(o) => { if (!o) setFocusTask(null) }} />
+      <TaskQuizDialog
+        open={!!quizTask}
+        onOpenChange={(o) => { if (!o) setQuizTask(null) }}
+        taskTitle={quizTask?.title ?? ""}
+        taskDescription={quizTask?.description}
+        goalTitle={goalNameById(quizTask?.goalId)}
+      />
     </Card>
   )
 }

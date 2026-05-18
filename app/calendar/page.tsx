@@ -566,6 +566,31 @@ export default function CalendarPage() {
                     </a>
                   )}
                 </div>
+
+                {Array.isArray(selectedEvent.resources) && selectedEvent.resources.length > 0 && (
+                  <div className="mt-2">
+                    <p className="text-xs font-medium text-slate-600 mb-1">Recommended resources</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {selectedEvent.resources.map((r: any, i: number) => r.url ? (
+                        <a
+                          key={i}
+                          href={r.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs px-2 py-1 rounded-md border border-slate-200 hover:border-purple-300 hover:bg-purple-50 text-slate-700"
+                        >
+                          <span className="text-[10px] uppercase text-purple-600 mr-1">{r.type}</span>
+                          {r.title}
+                        </a>
+                      ) : (
+                        <span key={i} className="text-xs px-2 py-1 rounded-md border border-slate-200 text-slate-600">
+                          <span className="text-[10px] uppercase text-slate-400 mr-1">{r.type}</span>
+                          {r.title}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="flex gap-2 pt-4">

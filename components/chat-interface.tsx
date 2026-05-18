@@ -6,7 +6,8 @@ import type React from "react"
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useState, useRef, useEffect } from "react"
-import { Send, CalendarIcon, Bot, User, Plus, Loader2, RefreshCw, Edit } from "lucide-react"
+import { Send, CalendarIcon, Bot, User, Plus, Loader2, RefreshCw, Edit, Mic, MicOff } from "lucide-react"
+import { useSpeechInput } from "@/hooks/use-speech-input"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -30,6 +31,7 @@ import { useProfileStore } from "@/lib/profile-store";
 import GoogleAuthButton from "@/components/google-auth-button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { authedFetch } from "@/lib/api-client";
+import { fetchGoogleBusySlots } from "@/lib/gcal-busy";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL;
 
@@ -42,6 +44,9 @@ interface UserProgressSignal {
   avgDelayDays?: number;
   recentlyCompleted?: string[];
   recentlyMissed?: string[];
+  // Summary of every active goal so the AI can distribute load instead of
+  // overbooking the user with the new plan on top of existing commitments.
+  activeGoals?: { title: string; tasksRemaining: number; estimatedHoursRemaining: number }[];
 }
 
 // --- Type Definitions for API Interaction ---
@@ -54,11 +59,18 @@ interface BackendGeminiContent {
   parts: BackendGeminiContentPart[];
 }
 
+interface BackendTaskResource {
+  title: string;
+  url?: string;
+  type: "article" | "video" | "course" | "book" | "docs" | "tool" | "other";
+}
+
 interface BackendTask {
   summary: string;
   description?: string | null;
   startTime: string;
   endTime: string;
+  resources?: BackendTaskResource[];
 }
 
 interface GeneratePlanRequestPayload {
@@ -174,12 +186,28 @@ export default function ChatInterface() {
       .filter(t => !t.completed && new Date(t.date + "T00:00:00") < today)
       .slice(-5)
       .map(t => t.title);
+    // Multi-goal load summary. Estimate hours by parsing "HH:MM" task ranges.
+    const goalsLoad = goals
+      .filter(g => g.status !== "completed")
+      .map(g => {
+        const goalTasks = allTasks.filter(t => t.goalId === g.id && !t.completed);
+        const hours = goalTasks.reduce((acc, t) => {
+          const [sh, sm] = t.startTime.split(":").map(n => parseInt(n, 10));
+          const [eh, em] = t.endTime.split(":").map(n => parseInt(n, 10));
+          if ([sh, sm, eh, em].some(Number.isNaN)) return acc;
+          return acc + ((eh * 60 + em) - (sh * 60 + sm)) / 60;
+        }, 0);
+        return { title: g.title, tasksRemaining: goalTasks.length, estimatedHoursRemaining: Math.round(hours * 10) / 10 };
+      })
+      .filter(g => g.tasksRemaining > 0)
+      .slice(0, 10);
     return {
       completionRate: completed / total,
       completedTasks: completed,
       totalTasks: total,
       recentlyCompleted: completedTitles,
       recentlyMissed: missed,
+      ...(goalsLoad.length ? { activeGoals: goalsLoad } : {}),
     };
   };
 
@@ -220,6 +248,15 @@ export default function ChatInterface() {
 
   const [planRequestParams, setPlanRequestParams] = useState<Partial<GeneratePlanRequestPayload>>({});
   const [selectedGoalId, setSelectedGoalId] = useState("none");
+
+  const speech = useSpeechInput();
+  useEffect(() => {
+    if (speech.transcript) {
+      setChatInput(prev => (prev ? prev + " " : "") + speech.transcript);
+      speech.reset();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [speech.transcript]);
 
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
@@ -402,6 +439,27 @@ export default function ChatInterface() {
 
 
   const handleRequestPlanGeneration = async (directPayload?: GeneratePlanRequestPayload) => {
+    // Merge in-app future tasks + external Google Calendar events so the AI
+    // sees the user's true schedule, not just the app-managed bits.
+    let mergedBusy = computeBusySlots() ?? [];
+    const tokenForBusy = getAccessToken();
+    if (tokenForBusy) {
+      try {
+        const startDate = planRequestParams.startDate
+          ? new Date(planRequestParams.startDate + "T00:00:00")
+          : new Date();
+        const external = await fetchGoogleBusySlots(
+          tokenForBusy,
+          startDate,
+          planRequestParams.durationDays || 14,
+          80,
+        );
+        mergedBusy = [...mergedBusy, ...external].slice(0, 80);
+      } catch {
+        // Non-fatal: planning still works without external busy data.
+      }
+    }
+
     const payload: GeneratePlanRequestPayload = directPayload || {
       goal: planRequestParams.goal || "Learning Goal",
       durationDays: planRequestParams.durationDays || 7,
@@ -412,7 +470,7 @@ export default function ChatInterface() {
       currentSkillLevel: planRequestParams.currentSkillLevel,
       chatHistoryForContext: mapMessagesToBackendHistory(messages),
       userProgress: computeProgressSignal(),
-      busySlots: computeBusySlots(),
+      busySlots: mergedBusy.length ? mergedBusy : undefined,
     };
 
     if (!payload.goal || !payload.durationDays || !payload.startDate) {
@@ -716,13 +774,25 @@ const handleIntegratePlanToCalendar = async () => {
             className="flex w-full items-center space-x-2"
           >
             <Input
-              placeholder="Type your message, or ask to generate a plan..."
+              placeholder={speech.listening ? "Listening…" : "Type your message, or ask to generate a plan..."}
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
               onKeyPress={handleKeyPress}
               className="flex-1 h-10 text-sm bg-white border-slate-200 focus:border-purple-300 focus:ring-purple-200 rounded-xl"
               disabled={isChatting || isGeneratingPlan}
             />
+            {speech.supported && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className={`rounded-xl px-3 ${speech.listening ? "bg-red-50 border-red-300 text-red-700" : ""}`}
+                onClick={() => (speech.listening ? speech.stop() : speech.start())}
+                aria-label={speech.listening ? "Stop voice input" : "Start voice input"}
+              >
+                {speech.listening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+              </Button>
+            )}
             <Button type="submit" size="sm" disabled={!chatInput.trim() || isChatting || isGeneratingPlan} className="btn-purple shadow-lg rounded-xl px-4">
               {isChatting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
               <span className="sr-only">Send message</span>
@@ -771,6 +841,29 @@ const handleIntegratePlanToCalendar = async () => {
                       {new Date(task.date + "T00:00:00").toLocaleDateString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' })} • {task.startTime} - {task.endTime}
                     </span>
                   </div>
+                  {task.backendTask?.resources && task.backendTask.resources.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {task.backendTask.resources.map((r, i) =>
+                        r.url ? (
+                          <a
+                            key={i}
+                            href={r.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs px-2 py-1 rounded-md border border-slate-200 hover:border-purple-300 hover:bg-purple-50 text-slate-700"
+                          >
+                            <span className="text-[10px] uppercase text-purple-600 mr-1">{r.type}</span>
+                            {r.title}
+                          </a>
+                        ) : (
+                          <span key={i} className="text-xs px-2 py-1 rounded-md border border-slate-200 text-slate-600">
+                            <span className="text-[10px] uppercase text-slate-400 mr-1">{r.type}</span>
+                            {r.title}
+                          </span>
+                        ),
+                      )}
+                    </div>
+                  )}
                 </Card>
               ))}
               {(!currentGeneratedPlan || currentGeneratedPlan.tasks.length === 0) && (

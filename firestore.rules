@@ -49,6 +49,18 @@ service cloud.firestore {
         && request.auth.token.email_verified == true;
     }
 
+    // Opt-in public profile snapshots used by the Friends/leaderboard feature.
+    // Anyone with the slug can read the user's display name + streak stats.
+    match /publicProfiles/{slug} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.auth.token.email == request.resource.data.ownerEmail
+        && request.auth.token.email_verified == true;
+      allow update, delete: if request.auth != null
+        && request.auth.token.email == resource.data.ownerEmail
+        && request.auth.token.email_verified == true;
+    }
+
     // Default-deny everything else.
     match /{document=**} {
       allow read, write: if false;

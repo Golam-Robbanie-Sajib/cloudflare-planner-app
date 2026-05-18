@@ -20,6 +20,27 @@ const DEFAULT_TIMEZONE = 'Asia/Dhaka';
 
 const ISO_LOOSE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/;
 
+// Resource link types accepted from the AI. Anything else is dropped at
+// validation time so the UI can render a stable badge per type.
+const RESOURCE_TYPES = new Set(['article', 'video', 'course', 'book', 'docs', 'tool', 'other']);
+
+function sanitizeResources(arr) {
+    if (!Array.isArray(arr)) return [];
+    const out = [];
+    for (const r of arr.slice(0, 8)) {
+        if (!r || typeof r !== 'object') continue;
+        const title = typeof r.title === 'string' ? r.title.trim().slice(0, 200) : '';
+        const url = typeof r.url === 'string' ? r.url.trim() : '';
+        const type = RESOURCE_TYPES.has(r.type) ? r.type : 'other';
+        if (!title) continue;
+        // URL is optional (the AI may suggest a title-only resource), but if
+        // it's provided it must be http(s) — refuse arbitrary schemes.
+        if (url && !/^https?:\/\//i.test(url)) continue;
+        out.push(url ? { title, url, type } : { title, type });
+    }
+    return out;
+}
+
 function validateAndSanitizeTask(task) {
     if (!task || typeof task !== 'object') return null;
     const summary = typeof task.summary === 'string' ? task.summary.trim() : '';
@@ -36,6 +57,7 @@ function validateAndSanitizeTask(task) {
         description: typeof task.description === 'string' ? task.description : null,
         startTime: startStr,
         endTime: endStr,
+        resources: sanitizeResources(task.resources),
     };
 }
 
@@ -168,7 +190,10 @@ You always respond with a single JSON object — no prose outside it — matchin
       "summary": string,
       "description": string | null,
       "startTime": string,
-      "endTime": string
+      "endTime": string,
+      "resources": [
+        { "title": string, "url": string | null, "type": "article" | "video" | "course" | "book" | "docs" | "tool" | "other" }
+      ]
     }
   ]
 }
@@ -177,6 +202,7 @@ Field rules:
 - "human_readable_plan": a conversational, multi-paragraph narrative summarizing the plan, week by week or phase by phase.
 - "structured_tasks": one entry per concrete calendar block. Each task must be schedulable as a single Google Calendar event.
 - "startTime" / "endTime": ISO 8601 datetime WITHOUT a timezone offset (e.g. "2025-04-12T09:00:00"). They will be interpreted in the timezone '${DEFAULT_TIMEZONE}'.
+- "resources": 0-4 high-signal recommendations for THIS task — official docs, well-known tutorials, specific exercises, named books. Only include URLs you're confident exist (https only); omit url if uncertain. Prefer breadth over depth: a doc + a video + an exercise is better than 4 articles.
 - The current date is ${currentDate}. Never schedule tasks in the past — if the requested start date is in the past, shift the plan forward.
 - Mix theory, practice, and review tasks. Build difficulty progressively. Keep individual task duration realistic (typically 30–180 minutes).
 - Match the user's daily/weekly hour availability if it is specified.
@@ -214,6 +240,12 @@ Field rules:
             if (typeof p.avgDelayDays === 'number') userPromptParts.push(`- Average task slippage: ${p.avgDelayDays.toFixed(1)} days late`);
             if (Array.isArray(p.recentlyCompleted) && p.recentlyCompleted.length) userPromptParts.push(`- Recently completed: ${p.recentlyCompleted.slice(0, 5).join('; ')}`);
             if (Array.isArray(p.recentlyMissed) && p.recentlyMissed.length) userPromptParts.push(`- Recently skipped/missed: ${p.recentlyMissed.slice(0, 5).join('; ')}`);
+            if (Array.isArray(p.activeGoals) && p.activeGoals.length) {
+                userPromptParts.push(`- Active goals already in progress (DO NOT overbook the user — distribute the new plan across days where they have headroom):`);
+                p.activeGoals.forEach((g) => {
+                    userPromptParts.push(`    • "${g.title}": ${g.tasksRemaining} tasks remaining (~${g.estimatedHoursRemaining}h)`);
+                });
+            }
             userPromptParts.push(`If completion rate is below 50%, reduce daily intensity and prefer shorter sessions. If above 85%, push slightly harder.`);
         }
         userPromptParts.push(`\nReturn ONLY the JSON object described in the system prompt.`);
@@ -400,6 +432,65 @@ app.post('/reschedule-event', async (c) => {
         }
         const eventData = await response.json();
         return c.json({ googleEventId: eventData.id, googleEventLink: eventData.htmlLink });
+    } catch (error) { return handleServiceError(error, c); }
+});
+
+// Generates a tiny 3-question check after a task is completed. The quiz is
+// shown in a small dialog; user answers feed back into the AI's view of
+// "what they actually understand" via /generate-plan's userProgress.
+// Strict JSON; multiple choice with 4 options and one correct index.
+app.post('/generate-quiz', async (c) => {
+    try {
+        const planner = new LearningPlannerService(process.env.GROQ_API_KEY);
+        const { taskTitle, taskDescription, goalTitle } = await c.req.json();
+        if (!taskTitle || typeof taskTitle !== 'string') {
+            return c.json({ detail: "taskTitle is required." }, 400);
+        }
+        const systemPrompt = `You are a quiz writer that produces a single JSON object — no prose outside it — matching this schema exactly:
+{
+  "questions": [
+    {
+      "question": string,
+      "options": [string, string, string, string],
+      "correctIndex": number,
+      "explanation": string
+    }
+  ]
+}
+
+Constraints:
+- Exactly 3 questions.
+- Each question has EXACTLY 4 distinct options.
+- "correctIndex" is 0-3 and matches a real option.
+- Difficulty: comprehension/applied — not trivia. Aim at someone who just finished the task.
+- "explanation" is 1-2 sentences explaining WHY the right answer is correct.`;
+        const userMessage = [
+            `Goal: ${goalTitle || '(not specified)'}`,
+            `Task just completed: ${taskTitle}`,
+            taskDescription ? `Task notes: ${taskDescription}` : '',
+            `Write a 3-question check.`,
+        ].filter(Boolean).join('\n');
+        const raw = await planner._callGroq({
+            systemPrompt,
+            messages: [{ role: 'user', content: userMessage }],
+            jsonMode: true,
+            temperature: 0.4,
+        });
+        let parsed;
+        try { parsed = JSON.parse(raw); } catch {
+            return c.json({ detail: "AI returned malformed JSON." }, 502);
+        }
+        const qs = Array.isArray(parsed.questions) ? parsed.questions : [];
+        const clean = qs.filter(q =>
+            q && typeof q.question === 'string' &&
+            Array.isArray(q.options) && q.options.length === 4 &&
+            q.options.every(o => typeof o === 'string') &&
+            typeof q.correctIndex === 'number' && q.correctIndex >= 0 && q.correctIndex < 4
+        ).slice(0, 3);
+        if (clean.length === 0) {
+            return c.json({ detail: "AI did not return any valid questions." }, 422);
+        }
+        return c.json({ questions: clean });
     } catch (error) { return handleServiceError(error, c); }
 });
 

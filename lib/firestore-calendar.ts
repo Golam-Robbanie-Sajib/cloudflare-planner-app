@@ -15,6 +15,12 @@ import { db } from "./firebase"
 
 export type SyncStatus = "pending" | "synced" | "failed"
 
+export interface TaskResource {
+  title: string
+  url?: string
+  type: "article" | "video" | "course" | "book" | "docs" | "tool" | "other"
+}
+
 export interface CalendarTask {
   id: string
   title: string
@@ -38,6 +44,7 @@ export interface CalendarTask {
   syncStatus?: SyncStatus
   googleEventId?: string
   googleEventLink?: string
+  resources?: TaskResource[]
   createdAt: Timestamp
   updatedAt: Timestamp
 }
