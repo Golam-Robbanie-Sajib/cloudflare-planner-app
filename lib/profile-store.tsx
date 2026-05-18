@@ -3,6 +3,7 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from "react"
 import { useAuth } from "./auth-context"
 import { UserProfile, getUserProfile, setUserProfile, updateUserProfile } from "./firestore-profile"
+import { migrateEmailToUid } from "./migrate-uid"
 
 interface ProfileStore {
   profile: UserProfile | null
@@ -18,7 +19,7 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
   const { userInfo, isAuthenticated } = useAuth()
 
   useEffect(() => {
-    if (!isAuthenticated || !userInfo?.email) {
+    if (!isAuthenticated || !userInfo?.uid) {
       setProfile(null)
       setLoading(false)
       return
@@ -26,7 +27,12 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 
     const loadProfile = async () => {
       try {
-        const userProfile = await getUserProfile(userInfo.email)
+        // One-time migration from legacy email-keyed docs to uid-keyed docs.
+        // Idempotent + cheap when nothing to do; safe to await before the
+        // first read so getUserProfile sees the copied doc.
+        await migrateEmailToUid(userInfo.uid, userInfo.email)
+
+        const userProfile = await getUserProfile(userInfo.uid)
         if (!userProfile) {
           // Create default profile for new users
           const defaultProfile = {
@@ -43,7 +49,7 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
               syncFrequency: "daily" as const
             }
           }
-          await setUserProfile(userInfo.email, defaultProfile)
+          await setUserProfile(userInfo.uid, defaultProfile)
           setProfile({ ...defaultProfile, createdAt: new Date(), updatedAt: new Date() } as any)
         } else {
           setProfile(userProfile)
@@ -59,8 +65,8 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
   }, [isAuthenticated, userInfo])
 
   const updateProfile = async (updates: Partial<UserProfile>) => {
-    if (!userInfo?.email) return
-    await updateUserProfile(userInfo.email, updates)
+    if (!userInfo?.uid) return
+    await updateUserProfile(userInfo.uid, updates)
     setProfile(prev => prev ? { ...prev, ...updates } : null)
   }
 

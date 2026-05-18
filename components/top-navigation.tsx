@@ -2,7 +2,7 @@
 
 "use client"
 
-import { Settings, Calendar, MessageSquare, TrendingUp } from "lucide-react"
+import { Settings, Calendar, MessageSquare, TrendingUp, Users } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useRouter } from "next/navigation";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -17,6 +17,7 @@ import {
 import Link from "next/link"
 import GoogleAuthButton from "@/components/google-auth-button"
 import { useAuth } from "@/lib/auth-context"
+import ThemeToggle from "@/components/theme-toggle"
 
 export default function TopNavigation() {
   const { isAuthenticated, userInfo, signOut } = useAuth()
@@ -59,11 +60,19 @@ export default function TopNavigation() {
           </Button>
         </Link>
 
+        <Link href="/friends">
+          <Button variant="ghost" size="icon" className="hover:bg-pink-100 hover:text-pink-600">
+            <Users className="h-5 w-5" />
+          </Button>
+        </Link>
+
         <Link href="/settings">
           <Button variant="ghost" size="icon" className="hover:bg-orange-100 hover:text-orange-600">
             <Settings className="h-5 w-5" />
           </Button>
         </Link>
+
+        <ThemeToggle />
 
         {/* User dropdown - only show if authenticated */}
         {isAuthenticated && userInfo && (

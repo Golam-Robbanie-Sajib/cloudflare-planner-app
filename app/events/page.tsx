@@ -17,11 +17,17 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { toast } from "@/components/ui/use-toast"
 import { useCalendarStore } from "@/lib/calendar-store"
+import { useGoalStore } from "@/lib/goal-store"
+import { useSyncRetry } from "@/hooks/use-sync-retry"
 import { type VariantProps } from "class-variance-authority"
+import { Target, AlertCircle, ExternalLink, RefreshCw, Loader2 } from "lucide-react"
 
 export default function EventsPage() {
   const [isCreateEventOpen, setIsCreateEventOpen] = useState(false)
   const { tasks, addTask } = useCalendarStore()
+  const { goals } = useGoalStore()
+  const { retry, retryingId } = useSyncRetry()
+  const goalNameById = (id?: string) => id ? goals.find(g => g.id === id)?.title : undefined
 
   // ADDED: State management for the details dialog
   const [selectedEvent, setSelectedEvent] = useState<any | null>(null)
@@ -32,7 +38,6 @@ export default function EventsPage() {
     id: task.id,
     title: task.title,
     description: task.description,
-    // Ensure date is treated as a Date object for sorting and filtering
     date: new Date(task.date + "T00:00:00"),
     location: task.location,
     attendees: task.attendees,
@@ -41,6 +46,9 @@ export default function EventsPage() {
     endTime: task.endTime,
     priority: task.priority,
     completed: task.completed,
+    goalTitle: goalNameById(task.goalId),
+    syncStatus: task.syncStatus,
+    googleEventLink: task.googleEventLink,
   }))
 
   const [searchQuery, setSearchQuery] = useState("")
@@ -255,17 +263,27 @@ export default function EventsPage() {
                     event={event}
                     badgeVariant={getBadgeVariant(event.type)}
                     handleShowDetails={handleShowDetails}
+                    onRetry={retry}
+                    retryingId={retryingId}
                   />
                 ))}
               </div>
             ) : (
-              <div className="flex h-[200px] items-center justify-center rounded-xl border-2 border-dashed border-slate-300 bg-white">
-                <div className="text-center">
-                  <p className="text-sm text-muted-foreground">No upcoming events found</p>
-                  <Button variant="outline" className="mt-2" onClick={() => setIsCreateEventOpen(true)}>
-                    <Plus className="mr-2 h-4 w-4" />
-                    Create Event
-                  </Button>
+              <div className="flex h-[260px] items-center justify-center rounded-xl border-2 border-dashed border-slate-300 bg-white">
+                <div className="text-center max-w-sm px-4">
+                  <p className="text-sm font-medium text-slate-700">No upcoming events yet</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Plan a learning goal with the AI assistant — every task lands here automatically. Or add a one-off event.
+                  </p>
+                  <div className="mt-4 flex gap-2 justify-center">
+                    <Link href="/dashboard">
+                      <Button className="btn-purple">Open AI assistant</Button>
+                    </Link>
+                    <Button variant="outline" onClick={() => setIsCreateEventOpen(true)}>
+                      <Plus className="mr-2 h-4 w-4" />
+                      New Event
+                    </Button>
+                  </div>
                 </div>
               </div>
             )}
@@ -286,7 +304,7 @@ export default function EventsPage() {
               </div>
             ) : (
               <div className="flex h-[200px] items-center justify-center rounded-xl border-2 border-dashed border-slate-300 bg-white">
-                <p className="text-sm text-muted-foreground">No past events found</p>
+                <p className="text-sm text-muted-foreground">No past events yet — your history will show up here as you complete tasks.</p>
               </div>
             )}
           </TabsContent>
@@ -329,12 +347,16 @@ function EventCard({
   event,
   badgeVariant,
   isPast = false,
-  handleShowDetails, // MODIFIED: Accept handler
+  handleShowDetails,
+  onRetry,
+  retryingId,
 }: {
   event: any
   badgeVariant: VariantProps<typeof badgeVariants>["variant"]
   isPast?: boolean
-  handleShowDetails: (event: any) => void // MODIFIED: Define handler type
+  handleShowDetails: (event: any) => void
+  onRetry?: (taskId: string) => void
+  retryingId?: string | null
 }) {
   return (
     <Card className={`card-colorful card-hover ${isPast ? "opacity-75" : ""} ${event.completed ? "opacity-60" : ""}`}>
@@ -396,16 +418,52 @@ function EventCard({
       </CardContent>
       <CardFooter className="pt-2">
         <div className="flex items-center justify-between w-full">
-          <Badge variant={badgeVariant} className="capitalize">
-            <Tag className="mr-1 h-3 w-3" />
-            {event.type}
-          </Badge>
-          {!isPast && (
-            // MODIFIED: Add onClick
-            <Button variant="outline" size="sm" className="hover:bg-purple-50 hover:border-purple-300" onClick={() => handleShowDetails(event)}>
-              View
-            </Button>
-          )}
+          <div className="flex flex-wrap gap-1">
+            <Badge variant={badgeVariant} className="capitalize">
+              <Tag className="mr-1 h-3 w-3" />
+              {event.type}
+            </Badge>
+            {event.goalTitle && (
+              <Badge variant="outline" className="border-purple-300 text-purple-700">
+                <Target className="mr-1 h-3 w-3" />{event.goalTitle}
+              </Badge>
+            )}
+            {event.syncStatus === "failed" && (
+              <Badge variant="outline" className="border-red-300 text-red-700">
+                <AlertCircle className="mr-1 h-3 w-3" />sync failed
+              </Badge>
+            )}
+            {event.googleEventLink && (
+              <a
+                href={event.googleEventLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-blue-600 hover:underline inline-flex items-center"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <ExternalLink className="h-3 w-3 mr-0.5" />GCal
+              </a>
+            )}
+          </div>
+          <div className="flex gap-1 items-center">
+            {event.syncStatus === "failed" && onRetry && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-amber-700 border-amber-300 hover:bg-amber-50"
+                onClick={(e) => { e.stopPropagation(); onRetry(event.id) }}
+                disabled={retryingId === event.id}
+              >
+                {retryingId === event.id ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <RefreshCw className="h-3 w-3 mr-1" />}
+                Retry sync
+              </Button>
+            )}
+            {!isPast && (
+              <Button variant="outline" size="sm" className="hover:bg-purple-50 hover:border-purple-300" onClick={() => handleShowDetails(event)}>
+                View
+              </Button>
+            )}
+          </div>
         </div>
       </CardFooter>
     </Card>

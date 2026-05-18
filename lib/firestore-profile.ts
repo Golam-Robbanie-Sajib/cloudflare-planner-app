@@ -19,6 +19,15 @@ export interface UserProfile {
     autoSync: boolean
     syncFrequency: "hourly" | "daily" | "manual"
   }
+  // Onboarding state and learning defaults captured during the first-run flow.
+  onboardedAt?: Timestamp
+  defaultDailyHours?: number
+  defaultPreferredTime?: "morning" | "afternoon" | "evening" | "any"
+  interests?: string[]
+  // Opt-in public profile slug (for the Friends/leaderboard feature) — null
+  // or absent means the user hasn't published their stats.
+  publicProfileSlug?: string
+  friendSlugs?: string[]
   createdAt: Timestamp
   updatedAt: Timestamp
 }

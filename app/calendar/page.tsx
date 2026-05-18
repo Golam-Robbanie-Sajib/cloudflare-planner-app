@@ -12,23 +12,59 @@ import { CalendarIcon, Clock, MapPin, Users, ArrowLeft, Plus, Check, Trash2, Inf
 import Link from "next/link"
 import { format, addDays, isToday, isTomorrow, parseISO } from "date-fns"
 import { useCalendarStore } from "@/lib/calendar-store"
+import { useGoalStore } from "@/lib/goal-store"
+import { useReschedule } from "@/hooks/use-reschedule"
+import { useSyncRetry } from "@/hooks/use-sync-retry"
 import { toast } from "@/components/ui/use-toast"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
+import { AlertCircle, RefreshCw, ExternalLink, Target, Loader2, GripVertical } from "lucide-react"
+import {
+  DndContext,
+  PointerSensor,
+  TouchSensor,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core"
 
 export default function CalendarPage() {
   const { tasks, addTask, toggleTask, deleteTask, loading } = useCalendarStore();
+  const { goals } = useGoalStore();
+  const { moveTo, movingId } = useReschedule();
+  const { retry, retryingId } = useSyncRetry();
+  const goalNameById = (id?: string) => id ? goals.find(g => g.id === id)?.title : undefined;
   const [isCreateEventOpen, setIsCreateEventOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<any | null>(null)
   const [showEventDialog, setShowEventDialog] = useState(false)
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [hoveredEvent, setHoveredEvent] = useState<string | null>(null)
+  const [draggingId, setDraggingId] = useState<string | null>(null)
 
-  // Convert tasks to events format for display
+  // @dnd-kit sensors: PointerSensor handles mouse + pen; TouchSensor enables
+  // touch with a 200ms hold to avoid hijacking taps. Activation distance
+  // prevents accidental drags when the user is just scrolling.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
+  )
+
+  const handleDragEnd = async (event: DragEndEvent) => {
+    setDraggingId(null)
+    const taskId = event.active.id as string
+    const dateStr = event.over?.id as string | undefined
+    if (!taskId || !dateStr) return
+    await moveTo(taskId, dateStr)
+  }
+
+  // Convert tasks to events format for display, preserving goal + sync metadata.
   const events = tasks.map((task) => ({
     ...task,
     date: new Date(task.date + "T00:00:00"),
     type: task.type === "event" ? "meeting" : task.priority === "high" ? "deadline" : "reminder",
+    goalTitle: goalNameById(task.goalId),
   }))
 
   // Get events for a specific date
@@ -92,6 +128,7 @@ export default function CalendarPage() {
     const startTime = formData.get("startTime") as string
     const endTime = formData.get("endTime") as string
     const priority = formData.get("priority") as "high" | "medium" | "low"
+    const goalId = (formData.get("goalId") as string) || ""
 
     if (!title || !date || !startTime || !endTime) {
       toast({
@@ -113,6 +150,7 @@ export default function CalendarPage() {
       source: "user",
       completed: false,
       synced: false,
+      ...(goalId && goalId !== "none" ? { goalId } : {}),
     })
 
     setShowCreateDialog(false)
@@ -193,6 +231,21 @@ export default function CalendarPage() {
                       <option value="low">Low Priority</option>
                     </select>
                   </div>
+                  {goals.length > 0 && (
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium">Link to Goal (optional)</label>
+                      <select
+                        name="goalId"
+                        defaultValue="none"
+                        className="w-full p-2 rounded-md border border-slate-200 focus:border-purple-300 focus:ring-purple-200"
+                      >
+                        <option value="none">No goal</option>
+                        {goals.map(g => (
+                          <option key={g.id} value={g.id}>{g.title}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                   <div className="flex gap-2 pt-4">
                     <Button
                       type="button"
@@ -217,18 +270,50 @@ export default function CalendarPage() {
       <div className="flex-1 p-6">
         <div className="mb-6">
           <h1 className="text-2xl font-bold">Calendar</h1>
-          <p className="text-muted-foreground">View your events for the next 14 days</p>
+          <p className="text-muted-foreground">View your events for the next 14 days. <span className="inline-flex items-center gap-1 text-xs"><GripVertical className="h-3 w-3" />drag a task to another day to reschedule</span></p>
         </div>
 
-        {/* Calendar Grid */}
+        {!loading && tasks.length === 0 && (
+          <div className="mb-6 flex items-center justify-center rounded-xl border-2 border-dashed border-slate-300 bg-white py-10">
+            <div className="text-center max-w-sm px-4">
+              <p className="text-sm font-medium text-slate-700">No events scheduled yet</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Tell the AI assistant what you want to learn — it'll generate a plan and the tasks will show up here.
+              </p>
+              <div className="mt-4 flex gap-2 justify-center">
+                <Link href="/dashboard">
+                  <Button className="btn-purple" size="sm">Open AI assistant</Button>
+                </Link>
+                <Button variant="outline" size="sm" onClick={() => setShowCreateDialog(true)}>
+                  <Plus className="mr-1 h-4 w-4" />
+                  New Event
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Calendar Grid wrapped in DndContext so any event card can be
+           dragged into any day card. Sensors handle both pointer + touch. */}
+        <DndContext
+          sensors={sensors}
+          onDragStart={(e) => setDraggingId(e.active.id as string)}
+          onDragCancel={() => setDraggingId(null)}
+          onDragEnd={handleDragEnd}
+        >
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-7 gap-4">
           {Array.from({ length: 14 }, (_, i) => {
             const date = addDays(new Date(), i)
             const dayEvents = getEventsForDate(date)
             const isCurrentDay = isToday(date)
+            const dateStr = format(date, "yyyy-MM-dd")
 
             return (
-              <Card key={i} className={`h-fit ${isCurrentDay ? "ring-2 ring-primary" : ""}`}>
+              <DayDroppable
+                key={i}
+                dateStr={dateStr}
+                isCurrentDay={isCurrentDay}
+              >
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm flex items-center justify-between">
                     <div>
@@ -246,12 +331,17 @@ export default function CalendarPage() {
                   <div className="space-y-2">
                     {dayEvents.length > 0 ? (
                       dayEvents.map((event) => (
-                        <div key={event.id} className="relative group">
+                        <DraggableEvent
+                          key={event.id}
+                          taskId={event.id}
+                          disabled={event.completed}
+                          isDragging={draggingId === event.id}
+                        >
                           <div
                             className={`p-2 rounded-md border-l-4 transition-all duration-200 ${getPriorityColor(event.priority)} ${
                               event.completed
                                 ? "opacity-50 bg-muted/30 line-through"
-                                : "hover:bg-muted/50 cursor-pointer"
+                                : "hover:bg-muted/50 cursor-grab active:cursor-grabbing"
                             }`}
                             onMouseEnter={() => setHoveredEvent(event.id)}
                             onMouseLeave={() => setHoveredEvent(null)}
@@ -267,6 +357,23 @@ export default function CalendarPage() {
                                 {event.location && (
                                   <p className="text-xs text-muted-foreground truncate mt-1">📍 {event.location}</p>
                                 )}
+                                <div className="flex flex-wrap gap-1 mt-1">
+                                  {event.goalTitle && (
+                                    <Badge variant="outline" className="text-[10px] py-0 h-4 px-1 border-purple-300 text-purple-700">
+                                      <Target className="h-2.5 w-2.5 mr-0.5" />{event.goalTitle}
+                                    </Badge>
+                                  )}
+                                  {event.syncStatus === "failed" && (
+                                    <Badge variant="outline" className="text-[10px] py-0 h-4 px-1 border-red-300 text-red-700">
+                                      <AlertCircle className="h-2.5 w-2.5 mr-0.5" />sync failed
+                                    </Badge>
+                                  )}
+                                  {event.syncStatus === "pending" && event.source === "ai" && (
+                                    <Badge variant="outline" className="text-[10px] py-0 h-4 px-1 border-slate-300 text-slate-500">
+                                      <RefreshCw className="h-2.5 w-2.5 mr-0.5" />syncing
+                                    </Badge>
+                                  )}
+                                </div>
                               </div>
                               <div className="flex items-center gap-1">
                                 {event.completed && <Check className="h-3 w-3 text-green-600" />}
@@ -330,6 +437,18 @@ export default function CalendarPage() {
                                         <Info className="h-3 w-3 mr-2" />
                                         Details
                                       </Button>
+                                      {event.syncStatus === "failed" && (
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          className="w-full justify-start h-8 px-2 text-amber-700"
+                                          onClick={(e) => { e.stopPropagation(); retry(event.id) }}
+                                          disabled={retryingId === event.id}
+                                        >
+                                          {retryingId === event.id ? <Loader2 className="h-3 w-3 mr-2 animate-spin" /> : <RefreshCw className="h-3 w-3 mr-2" />}
+                                          Retry sync
+                                        </Button>
+                                      )}
                                       <Button
                                         variant="ghost"
                                         size="sm"
@@ -348,7 +467,7 @@ export default function CalendarPage() {
                               </div>
                             )}
                           </div>
-                        </div>
+                        </DraggableEvent>
                       ))
                     ) : (
                       <div className="text-center py-4">
@@ -357,10 +476,11 @@ export default function CalendarPage() {
                     )}
                   </div>
                 </CardContent>
-              </Card>
+              </DayDroppable>
             )
           })}
         </div>
+        </DndContext>
       </div>
 
       {/* Event Detail Dialog */}
@@ -425,7 +545,7 @@ export default function CalendarPage() {
                   <span className="text-sm capitalize">{selectedEvent.priority} priority</span>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <Badge variant={getBadgeVariant(selectedEvent.type)} className="capitalize">
                     {selectedEvent.type}
                   </Badge>
@@ -434,7 +554,52 @@ export default function CalendarPage() {
                       Completed
                     </Badge>
                   )}
+                  {selectedEvent.goalTitle && (
+                    <Badge variant="outline" className="border-purple-300 text-purple-700">
+                      <Target className="h-3 w-3 mr-1" />{selectedEvent.goalTitle}
+                    </Badge>
+                  )}
+                  {selectedEvent.syncStatus === "failed" && (
+                    <Badge variant="outline" className="border-red-300 text-red-700">
+                      <AlertCircle className="h-3 w-3 mr-1" />Google sync failed
+                    </Badge>
+                  )}
+                  {selectedEvent.googleEventLink && (
+                    <a
+                      href={selectedEvent.googleEventLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-blue-600 hover:underline inline-flex items-center"
+                    >
+                      <ExternalLink className="h-3 w-3 mr-1" />Open in Google Calendar
+                    </a>
+                  )}
                 </div>
+
+                {Array.isArray(selectedEvent.resources) && selectedEvent.resources.length > 0 && (
+                  <div className="mt-2">
+                    <p className="text-xs font-medium text-slate-600 mb-1">Recommended resources</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {selectedEvent.resources.map((r: any, i: number) => r.url ? (
+                        <a
+                          key={i}
+                          href={r.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs px-2 py-1 rounded-md border border-slate-200 hover:border-purple-300 hover:bg-purple-50 text-slate-700"
+                        >
+                          <span className="text-[10px] uppercase text-purple-600 mr-1">{r.type}</span>
+                          {r.title}
+                        </a>
+                      ) : (
+                        <span key={i} className="text-xs px-2 py-1 rounded-md border border-slate-200 text-slate-600">
+                          <span className="text-[10px] uppercase text-slate-400 mr-1">{r.type}</span>
+                          {r.title}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="flex gap-2 pt-4">
@@ -481,6 +646,67 @@ export default function CalendarPage() {
           )}
         </DialogContent>
       </Dialog>
+    </div>
+  )
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// @dnd-kit primitives. Day cards are droppables (id = "YYYY-MM-DD"); event
+// cards are draggables (id = task.id). The DndContext above drives the
+// pointer + touch sensors and triggers moveTo() on drop. Splitting these out
+// of the main component keeps the JSX in CalendarPage readable.
+
+function DayDroppable({
+  dateStr,
+  isCurrentDay,
+  children,
+}: {
+  dateStr: string
+  isCurrentDay: boolean
+  children: React.ReactNode
+}) {
+  const { isOver, setNodeRef } = useDroppable({ id: dateStr })
+  return (
+    <Card
+      ref={setNodeRef}
+      className={`h-fit transition-all ${isCurrentDay ? "ring-2 ring-primary" : ""} ${isOver ? "ring-2 ring-purple-400 bg-purple-50 dark:bg-purple-950" : ""}`}
+    >
+      {children}
+    </Card>
+  )
+}
+
+function DraggableEvent({
+  taskId,
+  disabled,
+  isDragging,
+  children,
+}: {
+  taskId: string
+  disabled: boolean
+  isDragging: boolean
+  children: React.ReactNode
+}) {
+  const { attributes, listeners, setNodeRef, transform } = useDraggable({
+    id: taskId,
+    disabled,
+  })
+  // Apply the transform so the dragged element follows the pointer. Drop a
+  // touch-action: none on the node so touchscreens don't fight the gesture.
+  const style: React.CSSProperties = {
+    transform: transform ? `translate3d(${transform.x}px, ${transform.y}px, 0)` : undefined,
+    opacity: isDragging ? 0.5 : 1,
+    touchAction: disabled ? "auto" : "none",
+  }
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className="relative group"
+      {...listeners}
+      {...attributes}
+    >
+      {children}
     </div>
   )
 }

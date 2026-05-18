@@ -3,17 +3,22 @@
 "use client";
 
 import { useState } from "react";
-import { CalendarClock, MapPin, Users, Sparkles, Edit, Trash2 } from "lucide-react";
+import { CalendarClock, MapPin, Users, Sparkles, Edit, Trash2, Target, AlertCircle, ExternalLink } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-// MODIFIED: Corrected the import statement
 import { isToday, isTomorrow, isThisWeek, addDays, isBefore, startOfToday } from "date-fns";
 import { useCalendarStore } from "@/lib/calendar-store";
+import { useGoalStore } from "@/lib/goal-store";
+import { useSyncRetry } from "@/hooks/use-sync-retry";
 import { Button } from "@/components/ui/button";
+import { RefreshCw, Loader2 } from "lucide-react";
 
 export default function UpcomingEvents() {
   const { tasks, deleteTask } = useCalendarStore();
+  const { goals } = useGoalStore();
+  const { retry, retryingId } = useSyncRetry();
+  const goalNameById = (id?: string) => id ? goals.find(g => g.id === id)?.title : undefined;
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [selectedTask, setSelectedTask] = useState<any | null>(null);
   
@@ -108,14 +113,49 @@ export default function UpcomingEvents() {
               <span>{task.attendees} attendees</span>
             </div>
           )}
+
+          <div className="flex flex-wrap gap-1 pt-1">
+            {goalNameById(task.goalId) && (
+              <Badge variant="outline" className="text-[10px] py-0 h-4 px-1 border-purple-300 text-purple-700">
+                <Target className="h-2.5 w-2.5 mr-0.5" />{goalNameById(task.goalId)}
+              </Badge>
+            )}
+            {task.syncStatus === "failed" && (
+              <Badge variant="outline" className="text-[10px] py-0 h-4 px-1 border-red-300 text-red-700">
+                <AlertCircle className="h-2.5 w-2.5 mr-0.5" />sync failed
+              </Badge>
+            )}
+            {task.googleEventLink && (
+              <a
+                href={task.googleEventLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[10px] text-blue-600 hover:underline inline-flex items-center"
+              >
+                <ExternalLink className="h-2.5 w-2.5 mr-0.5" />GCal
+              </a>
+            )}
+          </div>
         </div>
-        <div className="flex gap-2 mt-4 border-t pt-3">
+        <div className="flex gap-2 mt-4 border-t pt-3 flex-wrap">
           <Button variant="outline" size="sm" onClick={() => handleEditClick(task)}>
             <Edit className="h-3 w-3 mr-1" /> Edit
           </Button>
           <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => deleteTask(task.id)}>
             <Trash2 className="h-3 w-3 mr-1" /> Delete
           </Button>
+          {task.syncStatus === "failed" && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-amber-700 border-amber-300 hover:bg-amber-50"
+              onClick={() => retry(task.id)}
+              disabled={retryingId === task.id}
+            >
+              {retryingId === task.id ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <RefreshCw className="h-3 w-3 mr-1" />}
+              Retry sync
+            </Button>
+          )}
         </div>
       </CardContent>
     </Card>

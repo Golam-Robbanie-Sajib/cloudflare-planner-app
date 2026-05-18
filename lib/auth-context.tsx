@@ -1,13 +1,14 @@
 // lib/auth-context.tsx
 
 "use client"
-import { createContext, useContext, useState, useEffect, type ReactNode } from "react"
+import { createContext, useContext, useState, useEffect, useRef, type ReactNode } from "react"
 import { googleLogout } from "@react-oauth/google"
 import { GoogleAuthProvider, signInWithPopup, signOut as firebaseSignOut, onAuthStateChanged, User } from "firebase/auth"
 import { auth, googleProvider } from "./firebase"
 import { toast } from "@/components/ui/use-toast"
 
 interface UserInfo {
+  uid: string
   email: string
   name: string
   picture: string
@@ -30,6 +31,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Dedupes concurrent sign-in calls: multiple components hitting an expired
+  // token at the same time should all await the SAME popup, not race their own.
+  const signInPromiseRef = useRef<Promise<string | null> | null>(null);
 
   // Effect to handle Firebase's own auth state changes in the background
   useEffect(() => {
@@ -68,10 +72,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signInWithGoogle = async (): Promise<string | null> => {
-    setIsLoading(true);
-    setError(null);
-    
-    try {
+    // If a sign-in is already in flight, every caller awaits the same promise.
+    if (signInPromiseRef.current) return signInPromiseRef.current;
+
+    const promise = (async (): Promise<string | null> => {
+      setIsLoading(true);
+      setError(null);
+      try {
       // The googleProvider is imported from firebase.ts, where the scope is correctly defined.
       // This ensures we ask for calendar permissions on the first sign-in.
       const result = await signInWithPopup(auth, googleProvider);
@@ -81,14 +88,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new Error("Google sign-in failed. Please try again.");
       }
 
-      const { displayName, email, photoURL } = result.user;
+      const { uid, displayName, email, photoURL } = result.user;
       const accessToken = credential.accessToken;
 
-      if (!displayName || !email) {
+      if (!uid || !displayName || !email) {
         throw new Error("User information is missing from Google response.");
       }
 
       const newUserInfo: UserInfo = {
+        uid,
         name: displayName,
         email: email,
         picture: photoURL || "",
@@ -129,6 +137,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsLoading(false);
     }
+    })();
+
+    signInPromiseRef.current = promise;
+    try {
+      return await promise;
+    } finally {
+      signInPromiseRef.current = null;
+    }
   };
 
   const signOut = async () => {
@@ -152,8 +168,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     try {
       const parsed = JSON.parse(storedUserInfo);
-      // Check if the token is less than 59 minutes old. Google tokens expire at 60 minutes.
-      const isTokenFresh = parsed.timestamp && (Date.now() - parsed.timestamp < 3540000); 
+      // Google access tokens live 60 min. Treat them as stale at 55 min so we
+      // never hand out a token that expires mid-request.
+      const isTokenFresh = parsed.timestamp && (Date.now() - parsed.timestamp < 55 * 60 * 1000);
       
       if (isTokenFresh && parsed.accessToken) {
         return parsed.accessToken;

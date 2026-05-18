@@ -1,0 +1,61 @@
+// Firestore security rules for the Goal Planner app.
+//
+// Schema invariant: every user document lives under /users/{userId}/...
+// where {userId} is the user's Firebase Auth UID (immutable per identity).
+// A user may only read and write their own subtree.
+//
+// Deploy with: firebase deploy --only firestore:rules
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Owner check by Firebase Auth UID. UID is immutable and survives email
+    // changes / account merges, unlike keying on email.
+    function isOwner(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+
+    match /users/{userId} {
+      allow read, write: if isOwner(userId);
+
+      match /tasks/{taskId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /goals/{goalId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /profile/{profileDoc} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    // Publicly shared, read-only plan snapshots. Anyone with the slug can
+    // read the document — that's the intended sharing mechanism. Writes are
+    // restricted to the owner identified by the document's `ownerUid` field.
+    match /publicPlans/{slug} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.auth.uid == request.resource.data.ownerUid;
+      allow update, delete: if request.auth != null
+        && request.auth.uid == resource.data.ownerUid;
+    }
+
+    // Opt-in public profile snapshots used by the Friends/leaderboard feature.
+    // Anyone with the slug can read the user's display name + streak stats.
+    match /publicProfiles/{slug} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.auth.uid == request.resource.data.ownerUid;
+      allow update, delete: if request.auth != null
+        && request.auth.uid == resource.data.ownerUid;
+    }
+
+    // Default-deny everything else.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

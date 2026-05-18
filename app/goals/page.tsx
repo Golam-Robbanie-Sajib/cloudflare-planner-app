@@ -11,8 +11,17 @@ import { Button } from "@/components/ui/button";
 import GoalCard from "@/components/goal-card";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import AddEditGoalDialog from "@/components/add-edit-goal-dialog"; // <-- Import the new component
+import AddEditGoalDialog from "@/components/add-edit-goal-dialog";
+import dynamic from "next/dynamic";
+
+// recharts adds ~100 kB to the bundle; load it lazily so the /goals route
+// stays light when the user has no goal selected.
+const GoalProgressChart = dynamic(() => import("@/components/goal-progress-chart"), {
+  ssr: false,
+  loading: () => <div className="h-44 flex items-center justify-center text-xs text-slate-400">Loading chart…</div>,
+});
 
 export default function GoalsPage() {
   const { goals, loading: goalsLoading } = useGoalStore();
@@ -47,7 +56,37 @@ export default function GoalsPage() {
         <ScrollArea className="lg:col-span-1 h-full">
           <div className="space-y-4">
             {(goalsLoading || tasksLoading) ? (
-              <p>Loading goals...</p>
+              <div className="space-y-3">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <Card key={i} className="card-colorful">
+                    <CardContent className="p-4 space-y-3">
+                      <Skeleton className="h-4 w-2/3" />
+                      <Skeleton className="h-3 w-full" />
+                      <Skeleton className="h-2 w-full" />
+                      <Skeleton className="h-3 w-1/3" />
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            ) : goals.length === 0 ? (
+              <Card className="card-colorful border-dashed">
+                <CardContent className="py-8 text-center">
+                  <p className="text-sm font-medium text-slate-700">No goals yet</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Goals are created automatically when you build a plan with the AI — or add one manually below.
+                  </p>
+                  <div className="mt-4 flex gap-2 justify-center">
+                    <Link href="/dashboard">
+                      <Button className="btn-purple" size="sm">Plan with AI</Button>
+                    </Link>
+                    <AddEditGoalDialog>
+                      <Button variant="outline" size="sm">
+                        <Plus className="h-4 w-4 mr-1" /> Manual
+                      </Button>
+                    </AddEditGoalDialog>
+                  </div>
+                </CardContent>
+              </Card>
             ) : (
               goals.map(goal => (
                 <div key={goal.id} onClick={() => setSelectedGoal(goal)} className="cursor-pointer">
@@ -65,6 +104,11 @@ export default function GoalsPage() {
               <CardTitle>{selectedGoal ? selectedGoal.title : "Select a Goal"}</CardTitle>
               <CardDescription>{selectedGoal ? "Here is the plan for this goal." : "Select a goal from the left to view its associated tasks."}</CardDescription>
             </CardHeader>
+            {selectedGoal && goalTasks.length > 0 && (
+              <div className="px-6 pb-2">
+                <GoalProgressChart tasks={goalTasks} />
+              </div>
+            )}
             <CardContent className="flex-1 overflow-hidden">
               <ScrollArea className="h-full">
                 <div className="space-y-3">

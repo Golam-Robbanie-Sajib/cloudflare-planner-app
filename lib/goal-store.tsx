@@ -27,13 +27,13 @@ export function GoalProvider({ children }: { children: ReactNode }) {
   const { userInfo, isAuthenticated } = useAuth();
 
   useEffect(() => {
-    if (!isAuthenticated || !userInfo?.email) {
+    if (!isAuthenticated || !userInfo?.uid) {
       setGoals([]);
       setLoading(false);
       return;
     }
 
-    const userId = userInfo.email;
+    const userId = userInfo.uid;
     const unsubscribe = subscribeToGoals(userId, (updatedGoals) => {
       setGoals(updatedGoals);
       setLoading(false);
@@ -43,19 +43,19 @@ export function GoalProvider({ children }: { children: ReactNode }) {
   }, [isAuthenticated, userInfo?.email]);
 
   const addGoal = async (goalData: Omit<UserGoal, "id" | "createdAt" | "updatedAt">) => {
-    if (!userInfo?.email) return null;
-    const newGoalRef = await addGoalToFirestore(userInfo.email, goalData);
+    if (!userInfo?.uid) return null;
+    const newGoalRef = await addGoalToFirestore(userInfo.uid, goalData);
     return newGoalRef.id;
   };
 
   const updateGoal = async (id: string, updates: Partial<UserGoal>) => {
-    if (!userInfo?.email) return;
-    await updateGoalInFirestore(userInfo.email, id, updates);
+    if (!userInfo?.uid) return;
+    await updateGoalInFirestore(userInfo.uid, id, updates);
   };
 
   const deleteGoal = async (id: string) => {
-    if (!userInfo?.email) return;
-    await deleteGoalFromFirestore(userInfo.email, id);
+    if (!userInfo?.uid) return;
+    await deleteGoalFromFirestore(userInfo.uid, id);
   };
 
   return (

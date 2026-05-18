@@ -4,8 +4,10 @@
 
 import type React from "react"
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useSearchParams, useRouter } from "next/navigation";
 import { useState, useRef, useEffect } from "react"
-import { Send, CalendarIcon, Bot, User, Plus, Loader2, RefreshCw, Edit } from "lucide-react"
+import { Send, CalendarIcon, Bot, User, Plus, Loader2, RefreshCw, Edit, Mic, MicOff } from "lucide-react"
+import { useSpeechInput } from "@/hooks/use-speech-input"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -25,39 +27,27 @@ import { useCalendarStore } from "@/lib/calendar-store"
 import { Textarea } from "@/components/ui/textarea"
 import { useAuth } from "@/lib/auth-context"
 import { useGoalStore } from "@/lib/goal-store";
+import { useProfileStore } from "@/lib/profile-store";
 import GoogleAuthButton from "@/components/google-auth-button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { fetchGoogleBusySlots } from "@/lib/gcal-busy";
+import { useChatMessage, useIntegratePlan } from "@/hooks/use-api-mutations";
+import { useStreamingPlan } from "@/hooks/use-streaming-plan";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL;
+
 
 // --- Type Definitions for API Interaction ---
+// BackendTask, BackendGeminiContent, UserProgress, BusySlot etc. now live in
+// lib/schemas.ts as Zod-derived types and are the single source of truth for
+// what crosses the wire. Anything imported below is just a re-alias for code
+// clarity at the call sites.
 
-interface BackendGeminiContentPart {
-  text: string;
-}
-interface BackendGeminiContent {
-  role: "user" | "model";
-  parts: BackendGeminiContentPart[];
-}
-
-interface BackendTask {
-  summary: string;
-  description?: string | null;
-  startTime: string;
-  endTime: string;
-}
-
-interface GeneratePlanRequestPayload {
-  goal: string;
-  durationDays: number;
-  startDate: string;
-  learningStyle?: string;
-  preferredTime?: string;
-  dailyHours?: number;
-  chatHistoryForContext?: BackendGeminiContent[];
-  refinementInstruction?: string;
-  existingPlanTasksForRefinement?: BackendTask[];
-}
+import type {
+  BackendTask,
+  GeminiContent as BackendGeminiContent,
+  UserProgress as UserProgressSignal,
+  GeneratePlanRequest as GeneratePlanRequestPayload,
+} from "@/lib/schemas";
 
 export interface UITask {
   id: string;
@@ -87,10 +77,87 @@ interface FrontendMessage {
 }
 
 export default function ChatInterface() {
-  const { addAIGeneratedTasks } = useCalendarStore();
-  const { isAuthenticated, getAccessToken, signInWithGoogle, signOut } = useAuth();
+  const { tasks: allTasks, addAIGeneratedTasks, applySyncResults } = useCalendarStore();
+  const { isAuthenticated, getAccessToken } = useAuth();
   const { goals, addGoal } = useGoalStore();
+  const { profile } = useProfileStore();
   const isMobile = useIsMobile();
+
+  // Apply profile defaults (daily hours, preferred time) once they load, but
+  // don't overwrite anything the user has already provided this session.
+  useEffect(() => {
+    if (!profile) return;
+    setPlanRequestParams(prev => ({
+      ...(profile.defaultDailyHours && !prev.dailyHours ? { dailyHours: profile.defaultDailyHours } : {}),
+      ...(profile.defaultPreferredTime && profile.defaultPreferredTime !== "any" && !prev.preferredTime
+        ? { preferredTime: profile.defaultPreferredTime }
+        : {}),
+      ...prev,
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile?.defaultDailyHours, profile?.defaultPreferredTime]);
+
+  // Build a UserProgressSignal from the user's Firestore tasks. Sent with every
+  // /generate-plan call so the AI tunes the new plan to actual completion rate.
+  const computeProgressSignal = (): UserProgressSignal | undefined => {
+    if (!allTasks || allTasks.length === 0) return undefined;
+    const total = allTasks.length;
+    const completed = allTasks.filter(t => t.completed).length;
+    if (total < 3) return undefined; // not enough signal yet
+    const completedTitles = allTasks
+      .filter(t => t.completed)
+      .sort((a, b) => {
+        const ad = (a as any).completedAt?.seconds ?? 0;
+        const bd = (b as any).completedAt?.seconds ?? 0;
+        return bd - ad;
+      })
+      .slice(0, 5)
+      .map(t => t.title);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const missed = allTasks
+      .filter(t => !t.completed && new Date(t.date + "T00:00:00") < today)
+      .slice(-5)
+      .map(t => t.title);
+    // Multi-goal load summary. Estimate hours by parsing "HH:MM" task ranges.
+    const goalsLoad = goals
+      .filter(g => g.status !== "completed")
+      .map(g => {
+        const goalTasks = allTasks.filter(t => t.goalId === g.id && !t.completed);
+        const hours = goalTasks.reduce((acc, t) => {
+          const [sh, sm] = t.startTime.split(":").map(n => parseInt(n, 10));
+          const [eh, em] = t.endTime.split(":").map(n => parseInt(n, 10));
+          if ([sh, sm, eh, em].some(Number.isNaN)) return acc;
+          return acc + ((eh * 60 + em) - (sh * 60 + sm)) / 60;
+        }, 0);
+        return { title: g.title, tasksRemaining: goalTasks.length, estimatedHoursRemaining: Math.round(hours * 10) / 10 };
+      })
+      .filter(g => g.tasksRemaining > 0)
+      .slice(0, 10);
+    return {
+      completionRate: completed / total,
+      completedTasks: completed,
+      totalTasks: total,
+      recentlyCompleted: completedTitles,
+      recentlyMissed: missed,
+      ...(goalsLoad.length ? { activeGoals: goalsLoad } : {}),
+    };
+  };
+
+  // Active, future (or today's) tasks that aren't yet completed — sent to the
+  // AI as busy slots so the generated plan doesn't collide with the user's
+  // existing commitments. Capped at 50 entries to keep prompts compact.
+  const computeBusySlots = () => {
+    if (!allTasks || allTasks.length === 0) return undefined;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const future = allTasks
+      .filter(t => !t.completed && new Date(t.date + "T00:00:00") >= today)
+      .sort((a, b) => (a.date + a.startTime).localeCompare(b.date + b.startTime))
+      .slice(0, 50)
+      .map(t => ({ date: t.date, startTime: t.startTime, endTime: t.endTime, title: t.title }));
+    return future.length ? future : undefined;
+  };
  
   const [messages, setMessages] = useState<FrontendMessage[]>([
     {
@@ -108,14 +175,48 @@ export default function ChatInterface() {
   const [isPlanDialogOpen, setIsPlanDialogOpen] = useState(false);
   const [refinementInput, setRefinementInput] = useState("");
 
-  const [isChatting, setIsChatting] = useState(false);
-  const [isGeneratingPlan, setIsGeneratingPlan] = useState(false);
-  const [isIntegratingPlan, setIsIntegratingPlan] = useState(false);
+  // TanStack Query mutations replace the ad-hoc isChatting/isGeneratingPlan/
+  // isIntegratingPlan flags. The aliases below preserve the rest of the
+  // component's call sites (`isChatting`, etc.) without renaming.
+  const chatMutation = useChatMessage();
+  const streamingPlan = useStreamingPlan();
+  const integratePlanMutation = useIntegratePlan();
+  const isChatting = chatMutation.isPending;
+  const isGeneratingPlan = streamingPlan.isPending;
+  const isIntegratingPlan = integratePlanMutation.isPending;
 
   const [planRequestParams, setPlanRequestParams] = useState<Partial<GeneratePlanRequestPayload>>({});
   const [selectedGoalId, setSelectedGoalId] = useState("none");
 
+  const speech = useSpeechInput();
+  useEffect(() => {
+    if (speech.transcript) {
+      setChatInput(prev => (prev ? prev + " " : "") + speech.transcript);
+      speech.reset();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [speech.transcript]);
+
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
+  // When the user clicks "Regenerate" on a goal card, the dashboard URL gets
+  // ?regen=<goalId>&goal=<title>. On mount we drop a prefilled refinement
+  // prompt into the chat so the AI knows which goal to re-plan, then strip
+  // the query so a refresh doesn't re-trigger it.
+  useEffect(() => {
+    const regenId = searchParams.get("regen");
+    const goalTitle = searchParams.get("goal");
+    if (!regenId || !goalTitle) return;
+    setChatInput(`I'd like to regenerate or adjust the plan for my goal: "${goalTitle}". Please consider my progress so far and propose what to do next.`);
+    setSuggestedGoalTitle(goalTitle);
+    setPlanRequestParams(prev => ({ ...prev, goal: goalTitle }));
+    // Strip the query params without adding a history entry.
+    router.replace("/dashboard");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (scrollAreaRef.current) {
@@ -212,69 +313,86 @@ export default function ChatInterface() {
   
 
   const handleSendMessage = async () => {
-  if (!chatInput.trim() || isChatting) return;
+    if (!chatInput.trim() || isChatting) return;
 
-  const newUserMessage: FrontendMessage = { id: Date.now().toString(), text: chatInput, role: "user", timestamp: new Date() };
-  setMessages(prev => [...prev, newUserMessage]);
-  const currentInput = chatInput;
-  setChatInput("");
-  setIsChatting(true);
+    const newUserMessage: FrontendMessage = { id: Date.now().toString(), text: chatInput, role: "user", timestamp: new Date() };
+    setMessages(prev => [...prev, newUserMessage]);
+    const currentInput = chatInput;
+    setChatInput("");
 
-  parsePlanParamsFromMessage(currentInput);
-  const backendChatHistory = mapMessagesToBackendHistory([...messages, newUserMessage]);
+    parsePlanParamsFromMessage(currentInput);
+    const backendChatHistory = mapMessagesToBackendHistory([...messages, newUserMessage]);
 
-  try {
-    // --- THIS IS THE NEW, SMART TOKEN REFRESH LOGIC ---
-    let accessToken = getAccessToken();
-    if (!accessToken) {
-      console.log("Token stale for chat, refreshing...");
-      accessToken = await signInWithGoogle();
+    try {
+      const data = await chatMutation.mutateAsync({
+        userMessage: currentInput,
+        chatHistory: backendChatHistory.slice(0, -1),
+      });
+
+      const aiResponseMessage: FrontendMessage = { id: (Date.now() + 1).toString(), text: data.response, role: "ai", timestamp: new Date() };
+
+      // Promote AI-extracted params into local state. This is what lets the
+      // "Generate Plan" button enable reliably without depending on the brittle
+      // frontend regex parser.
+      if (data.extractedParams) {
+        const ep = data.extractedParams;
+        setPlanRequestParams(prev => ({
+          ...prev,
+          ...(ep.goal ? { goal: ep.goal } : {}),
+          ...(typeof ep.durationDays === "number" && ep.durationDays > 0 ? { durationDays: ep.durationDays } : {}),
+          ...(typeof ep.dailyHours === "number" && ep.dailyHours > 0 ? { dailyHours: ep.dailyHours } : {}),
+          ...(ep.startDate ? { startDate: ep.startDate } : {}),
+          ...(ep.currentSkillLevel ? { currentSkillLevel: ep.currentSkillLevel } : {}),
+        }));
+      }
+
+      if (data.intent === "create_goal" && data.goalTitle) {
+        setSuggestedGoalTitle(data.goalTitle);
+      }
+      setMessages(prev => [...prev, aiResponseMessage]);
+    } catch (error) {
+      console.error("Chat API error:", error);
+      toast({ title: "Error", description: (error as Error).message, variant: "destructive" });
+      const errorResponseMessage: FrontendMessage = { id: (Date.now() + 1).toString(), text: `Sorry, I encountered an error: ${(error as Error).message}`, role: "ai", timestamp: new Date() };
+      setMessages(prev => [...prev, errorResponseMessage]);
     }
-    if (!accessToken) {
-      throw new Error("Authentication failed. Please sign in again.");
-    }
-    // --- END OF REFRESH LOGIC ---
-
-    const response = await fetch(`${API_BASE_URL}/chat-message`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
-      body: JSON.stringify({ userMessage: currentInput, chatHistory: backendChatHistory.slice(0, -1) }),
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.detail || "Failed to get response from AI");
-    }
-
-    const data: { intent: string; goalTitle: string | null; response: string } = await response.json();
-    const aiResponseMessage: FrontendMessage = { id: (Date.now() + 1).toString(), text: data.response, role: "ai", timestamp: new Date() };
-
-    if (data.intent === "create_goal" && data.goalTitle) {
-      setSuggestedGoalTitle(data.goalTitle);
-    }
-    setMessages(prev => [...prev, aiResponseMessage]);
-
-  } catch (error) {
-    console.error("Chat API error:", error);
-    toast({ title: "Error", description: (error as Error).message, variant: "destructive" });
-    const errorResponseMessage: FrontendMessage = { id: (Date.now() + 1).toString(), text: `Sorry, I encountered an error: ${(error as Error).message}`, role: "ai", timestamp: new Date() };
-    setMessages(prev => [...prev, errorResponseMessage]);
-  } finally {
-    setIsChatting(false);
-  }
-};
+  };
 
 
 
   const handleRequestPlanGeneration = async (directPayload?: GeneratePlanRequestPayload) => {
-     const payload: GeneratePlanRequestPayload = directPayload || {
-      goal: planRequestParams.goal || "Learning Goal", // Your core logic is preserved
+    // Merge in-app future tasks + external Google Calendar events so the AI
+    // sees the user's true schedule, not just the app-managed bits.
+    let mergedBusy = computeBusySlots() ?? [];
+    const tokenForBusy = getAccessToken();
+    if (tokenForBusy) {
+      try {
+        const startDate = planRequestParams.startDate
+          ? new Date(planRequestParams.startDate + "T00:00:00")
+          : new Date();
+        const external = await fetchGoogleBusySlots(
+          tokenForBusy,
+          startDate,
+          planRequestParams.durationDays || 14,
+          80,
+        );
+        mergedBusy = [...mergedBusy, ...external].slice(0, 80);
+      } catch {
+        // Non-fatal: planning still works without external busy data.
+      }
+    }
+
+    const payload: GeneratePlanRequestPayload = directPayload || {
+      goal: planRequestParams.goal || "Learning Goal",
       durationDays: planRequestParams.durationDays || 7,
       startDate: planRequestParams.startDate || new Date(Date.now() + 86400000).toISOString().split("T")[0],
       dailyHours: planRequestParams.dailyHours || 2,
       learningStyle: planRequestParams.learningStyle,
       preferredTime: planRequestParams.preferredTime,
+      currentSkillLevel: planRequestParams.currentSkillLevel,
       chatHistoryForContext: mapMessagesToBackendHistory(messages),
+      userProgress: computeProgressSignal(),
+      busySlots: mergedBusy.length ? mergedBusy : undefined,
     };
 
     if (!payload.goal || !payload.durationDays || !payload.startDate) {
@@ -282,67 +400,67 @@ export default function ChatInterface() {
       return;
     }
 
-    setIsGeneratingPlan(true);
     if (!directPayload) setCurrentGeneratedPlan(null);
 
+    // Open the dialog immediately — narrative will fill in as it streams.
+    // We seed `currentGeneratedPlan` with empty tasks so the existing
+    // dialog rendering works; once the stream finishes we replace it with
+    // the structured result.
+    setCurrentGeneratedPlan({
+      title: payload.goal,
+      description: `A plan to ${payload.goal} over ${payload.durationDays} days starting ${payload.startDate}.`,
+      tasks: [],
+      humanReadablePlan: "",
+      originalBackendTasks: [],
+      originalRequestParams: payload,
+    });
+    setTimeout(() => setIsPlanDialogOpen(true), 100);
+
     try {
-      // ===================================================================
-      // === THIS IS THE ADDED TOKEN-REFRESH LOGIC =========================
-      // ===================================================================
-      let accessToken = getAccessToken();
-      if (!accessToken) {
-          console.log("Token stale for plan generation, refreshing...");
-          accessToken = await signInWithGoogle();
-      }
-      if (!accessToken) {
-          // This error will be caught by the catch block below
-          throw new Error("Authentication failed. Please sign in again.");
-      }
-      // ===================================================================
-      // === END OF ADDED LOGIC ============================================
-      // ===================================================================
-      
-      const response = await fetch(`${API_BASE_URL}/generate-plan`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` }, // Correctly uses the (potentially new) token
-        body: JSON.stringify(payload),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || "Failed to generate plan");
+      const result = await streamingPlan.start(payload);
+      if (!result) {
+        // Streaming failed or was aborted — error toast comes from below.
+        throw new Error(streamingPlan.error || "Failed to generate plan");
       }
 
-      const data: { humanReadablePlan: string; structuredTasks: BackendTask[] } = await response.json();
-
-      const newUIPlan: UIPlan = {
+      const finalUIPlan: UIPlan = {
         title: payload.goal,
         description: `A plan to ${payload.goal} over ${payload.durationDays} days starting ${payload.startDate}.`,
-        tasks: data.structuredTasks.map(mapBackendTaskToUITask),
-        humanReadablePlan: data.humanReadablePlan,
-        originalBackendTasks: data.structuredTasks,
+        tasks: result.tasks.map(mapBackendTaskToUITask),
+        humanReadablePlan: result.narrative,
+        originalBackendTasks: result.tasks,
         originalRequestParams: payload,
       };
-      setCurrentGeneratedPlan(newUIPlan);
+      setCurrentGeneratedPlan(finalUIPlan);
 
       const planIntroMessage: FrontendMessage = { id: (Date.now() + 10).toString(), text: `Okay, I've ${directPayload ? 'refined the' : 'generated a'} plan for you to "${payload.goal}". You can review it now!`, role: "ai", timestamp: new Date() };
       setMessages(prev => [...prev, planIntroMessage]);
 
-      setTimeout(() => setIsPlanDialogOpen(true), 300);
       toast({ title: `Plan ${directPayload ? 'Refined' : 'Generated'}!`, description: "Your new learning plan is ready." });
-
     } catch (error) {
       console.error("Generate Plan API error:", error);
       toast({ title: "Error Generating Plan", description: (error as Error).message, variant: "destructive" });
+      // Roll the empty placeholder back so the user doesn't see a half-open
+      // dialog with no content.
+      setCurrentGeneratedPlan(null);
+      setIsPlanDialogOpen(false);
     } finally {
-      setIsGeneratingPlan(false);
       setRefinementInput("");
     }
   };
 
 
+// Integration is intentionally two-phase to avoid the "Google succeeded,
+// Firestore failed → phantom events" data loss path:
+//
+//   Phase 1: write all tasks to Firestore first, with syncStatus='pending'.
+//            (Goal doc is created first so tasks can link to it.) If this
+//            fails, nothing landed anywhere — clean rollback.
+//   Phase 2: call /integrate-plan; for each per-task result, update that
+//            Firestore task with syncStatus='synced' + googleEventId, or
+//            syncStatus='failed' with an error. Failed tasks remain visible
+//            in-app with a "Sync failed — retry" affordance.
 const handleIntegratePlanToCalendar = async () => {
-  // 1. --- Initial Guard Clauses ---
   if (!currentGeneratedPlan || !currentGeneratedPlan.originalBackendTasks) {
     toast({ title: "No Plan", description: "No plan to integrate.", variant: "destructive" });
     return;
@@ -352,92 +470,69 @@ const handleIntegratePlanToCalendar = async () => {
     return;
   }
 
-  setIsIntegratingPlan(true);
+  const tasksForSync = currentGeneratedPlan.originalBackendTasks;
 
+  // Phase 1a: create the goal (if requested) so tasks can carry goalId.
+  let finalGoalId: string | undefined = undefined;
+  let taskIds: string[] = [];
   try {
-    // 2. --- Smart Access Token Retrieval & Refresh ---
-    let accessToken = getAccessToken(); // "Fast path" check for a fresh token from localStorage
-
-    // If the fast path fails (token is stale or missing), we must get a new one.
-    if (!accessToken) {
-      console.log("Access token is stale or missing, attempting to refresh session...");
-      // This will trigger the sign-in flow, which will likely be a seamless popup
-      // for an already-authenticated user, and it returns the new, fresh token.
-      accessToken = await signInWithGoogle();
-    }
-
-    // After the potential refresh, we do a final check.
-    if (!accessToken) {
-      // This will only happen if the refresh process itself failed (e.g., user closed the popup).
-      throw new Error("Could not get a valid session. Please try again.");
-    }
-
-    // 3. --- Call the External Google Calendar API ---
-    // We do this first, because it's the most likely step to fail.
-    const googleApiPayload = {
-      skillName: currentGeneratedPlan.title,
-      structuredTasks: currentGeneratedPlan.originalBackendTasks,
-    };
-
-    const response = await fetch(`${API_BASE_URL}/integrate-plan`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify(googleApiPayload),
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      // If the API call fails with an auth error even after our refresh attempt,
-      // it means something is seriously wrong. We should sign the user out.
-      if (response.status === 401) {
-        signOut();
-      }
-      throw new Error(errorData.detail || "Failed to sync with Google Calendar.");
-    }
-
-    // 4. --- Handle Internal Database Operations (Firestore) ---
-    let finalGoalId: string | undefined = undefined;
-
-    // Create the new goal if the user provided a title
     if (goalInputForDialog.trim() !== "") {
       const newGoalId = await addGoal({
         title: goalInputForDialog.trim(),
         description: `Goal for the plan: ${currentGeneratedPlan.title}`,
         status: "in_progress",
       });
-      if (newGoalId) {
-        finalGoalId = newGoalId;
-      }
+      if (newGoalId) finalGoalId = newGoalId;
     }
 
-    // Add the AI-generated tasks to our internal calendar, linking the new goal ID
-    await addAIGeneratedTasks(currentGeneratedPlan.originalBackendTasks, finalGoalId);
+    // Phase 1b: write tasks to Firestore. Each task starts as syncStatus='pending'.
+    taskIds = await addAIGeneratedTasks(tasksForSync, finalGoalId);
+    if (taskIds.length === 0) {
+      throw new Error("None of the tasks were valid. Try regenerating the plan.");
+    }
 
-    // 5. --- Success Feedback and UI Cleanup ---
-    toast({
-      title: "Plan Integrated Successfully!",
-      description: "Tasks have been added to your Google Calendar and saved to your dashboard.",
+    // Phase 2: push to Google Calendar via the integrate mutation.
+    const data = await integratePlanMutation.mutateAsync({
+      skillName: currentGeneratedPlan.title,
+      structuredTasks: tasksForSync,
     });
+
+    // Map per-task Google results back onto the Firestore task IDs by index.
+    const syncUpdates = (data.results || []).map((r) => ({
+      taskId: taskIds[r.index],
+      googleEventId: r.googleEventId,
+      googleEventLink: r.googleEventLink,
+      syncStatus: r.status,
+    })).filter((u) => !!u.taskId);
+    await applySyncResults(syncUpdates);
+
+    const failedCount = syncUpdates.filter((u) => u.syncStatus === "failed").length;
+    if (failedCount > 0) {
+      toast({
+        title: "Plan saved — partial Google sync",
+        description: `${syncUpdates.length - failedCount} synced, ${failedCount} failed. The failed events stay in the app and can be retried.`,
+      });
+    } else {
+      toast({ title: "Plan Integrated Successfully!", description: data.message || "Tasks saved and synced to Google Calendar." });
+    }
 
     setIsPlanDialogOpen(false);
     setCurrentGeneratedPlan(null);
     setSuggestedGoalTitle("");
     setGoalInputForDialog("");
-
   } catch (error) {
-    // 6. --- Unified Error Handling ---
     console.error("Integrate Plan API error:", error);
+    // If we already wrote tasks to Firestore but the Google sync threw,
+    // flag every just-written task so the user can retry per-task. No data
+    // loss either way.
+    if (taskIds.length > 0) {
+      await applySyncResults(taskIds.map((id) => ({ taskId: id, syncStatus: "failed" as const })));
+    }
     toast({
       title: "Error Integrating Plan",
       description: (error as Error).message,
       variant: "destructive",
     });
-  } finally {
-    // 7. --- Final State Cleanup ---
-    setIsIntegratingPlan(false);
   }
 };
   
@@ -469,9 +564,12 @@ const handleIntegratePlanToCalendar = async () => {
       dailyHours: refinementParams.dailyHours || originalParams.dailyHours,
       learningStyle: originalParams.learningStyle,
       preferredTime: originalParams.preferredTime,
+      currentSkillLevel: originalParams.currentSkillLevel,
       chatHistoryForContext: mapMessagesToBackendHistory(messages),
       refinementInstruction: refinementInput,
       existingPlanTasksForRefinement: currentGeneratedPlan.originalBackendTasks,
+      userProgress: computeProgressSignal(),
+      busySlots: computeBusySlots(),
     };
     
     handleRequestPlanGeneration(refinementPayload);
@@ -592,13 +690,25 @@ const handleIntegratePlanToCalendar = async () => {
             className="flex w-full items-center space-x-2"
           >
             <Input
-              placeholder="Type your message, or ask to generate a plan..."
+              placeholder={speech.listening ? "Listening…" : "Type your message, or ask to generate a plan..."}
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
               onKeyPress={handleKeyPress}
               className="flex-1 h-10 text-sm bg-white border-slate-200 focus:border-purple-300 focus:ring-purple-200 rounded-xl"
               disabled={isChatting || isGeneratingPlan}
             />
+            {speech.supported && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className={`rounded-xl px-3 ${speech.listening ? "bg-red-50 border-red-300 text-red-700" : ""}`}
+                onClick={() => (speech.listening ? speech.stop() : speech.start())}
+                aria-label={speech.listening ? "Stop voice input" : "Start voice input"}
+              >
+                {speech.listening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+              </Button>
+            )}
             <Button type="submit" size="sm" disabled={!chatInput.trim() || isChatting || isGeneratingPlan} className="btn-purple shadow-lg rounded-xl px-4">
               {isChatting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
               <span className="sr-only">Send message</span>
@@ -614,11 +724,19 @@ const handleIntegratePlanToCalendar = async () => {
             <DialogDescription className="text-slate-600">
               {currentGeneratedPlan?.description || "Review the tasks for your plan."}
             </DialogDescription>
-            {currentGeneratedPlan?.humanReadablePlan && (
+            {(currentGeneratedPlan?.humanReadablePlan || streamingPlan.narrative) && (
               <ScrollArea className="mt-2 p-2 border rounded-md max-h-40 bg-slate-50 text-sm text-slate-700">
-                <h4 className="font-semibold mb-1">AI's Full Plan Outline:</h4>
-                <pre className="whitespace-pre-wrap font-sans text-xs">{currentGeneratedPlan.humanReadablePlan}</pre>
+                <h4 className="font-semibold mb-1 flex items-center gap-2">
+                  AI's Full Plan Outline:
+                  {isGeneratingPlan && <Loader2 className="h-3 w-3 animate-spin text-purple-500" />}
+                </h4>
+                <pre className="whitespace-pre-wrap font-sans text-xs">{currentGeneratedPlan?.humanReadablePlan || streamingPlan.narrative}</pre>
               </ScrollArea>
+            )}
+            {isGeneratingPlan && (!currentGeneratedPlan?.tasks || currentGeneratedPlan.tasks.length === 0) && (
+              <p className="text-xs text-slate-500 mt-2 flex items-center gap-1">
+                <Loader2 className="h-3 w-3 animate-spin" /> Building your task schedule…
+              </p>
             )}
           </DialogHeader>
 
@@ -647,6 +765,29 @@ const handleIntegratePlanToCalendar = async () => {
                       {new Date(task.date + "T00:00:00").toLocaleDateString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' })} • {task.startTime} - {task.endTime}
                     </span>
                   </div>
+                  {task.backendTask?.resources && task.backendTask.resources.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {task.backendTask.resources.map((r, i) =>
+                        r.url ? (
+                          <a
+                            key={i}
+                            href={r.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs px-2 py-1 rounded-md border border-slate-200 hover:border-purple-300 hover:bg-purple-50 text-slate-700"
+                          >
+                            <span className="text-[10px] uppercase text-purple-600 mr-1">{r.type}</span>
+                            {r.title}
+                          </a>
+                        ) : (
+                          <span key={i} className="text-xs px-2 py-1 rounded-md border border-slate-200 text-slate-600">
+                            <span className="text-[10px] uppercase text-slate-400 mr-1">{r.type}</span>
+                            {r.title}
+                          </span>
+                        ),
+                      )}
+                    </div>
+                  )}
                 </Card>
               ))}
               {(!currentGeneratedPlan || currentGeneratedPlan.tasks.length === 0) && (
