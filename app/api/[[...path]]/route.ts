@@ -70,6 +70,61 @@ interface CallGroqArgs {
   model?: string
 }
 
+// Streams Groq's chat completion via SSE and yields each delta string as the
+// model writes it. Uses fetch+ReadableStream — no SDK needed, edge-safe.
+async function* streamGroq(apiKey: string, args: CallGroqArgs): AsyncGenerator<string, void, void> {
+  const body: Record<string, unknown> = {
+    model: args.model ?? GROQ_SMART_MODEL,
+    messages: [{ role: "system", content: args.systemPrompt }, ...args.messages],
+    temperature: args.temperature ?? 0.4,
+    stream: true,
+  }
+  // JSON-mode + streaming is supported; the response.format constraint still
+  // applies to the final concatenated string.
+  if (args.jsonMode) body.response_format = { type: "json_object" }
+
+  const response = await fetch(GROQ_API_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok || !response.body) {
+    const text = await response.text().catch(() => "")
+    throw new Error(`Groq stream failed: ${response.status} ${text}`)
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ""
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    // SSE frames are separated by "\n\n"; lines start with "data: ".
+    let idx: number
+    while ((idx = buf.indexOf("\n\n")) >= 0) {
+      const frame = buf.slice(0, idx)
+      buf = buf.slice(idx + 2)
+      for (const line of frame.split("\n")) {
+        const m = /^data:\s?(.*)$/.exec(line)
+        if (!m) continue
+        const payload = m[1]
+        if (payload === "[DONE]") return
+        try {
+          const json = JSON.parse(payload) as { choices?: { delta?: { content?: string } }[] }
+          const delta = json.choices?.[0]?.delta?.content
+          if (delta) yield delta
+        } catch {
+          // ignore malformed SSE frames
+        }
+      }
+    }
+  }
+}
+
 async function callGroq(apiKey: string, args: CallGroqArgs): Promise<string> {
   const body: Record<string, unknown> = {
     model: args.model ?? GROQ_SMART_MODEL,
@@ -205,36 +260,11 @@ Output ONLY the JSON object.`
   return result.data
 }
 
-async function runGeneratePlan(apiKey: string, req: GeneratePlanRequest): Promise<{ tasks: BackendTask[] | null; plan: string }> {
-  const currentDate = new Date().toISOString().split("T")[0]
-  const systemPrompt = `You are an AI specialized in generating structured, realistic learning plans.
-
-You always respond with a single JSON object — no prose outside it — matching this schema exactly:
-{
-  "human_readable_plan": string,
-  "structured_tasks": [
-    {
-      "summary": string,
-      "description": string | null,
-      "startTime": string,
-      "endTime": string,
-      "resources": [
-        { "title": string, "url": string | null, "type": "article" | "video" | "course" | "book" | "docs" | "tool" | "other" }
-      ]
-    }
-  ]
-}
-
-Field rules:
-- "human_readable_plan": a conversational, multi-paragraph narrative summarizing the plan, week by week or phase by phase.
-- "structured_tasks": one entry per concrete calendar block. Each task must be schedulable as a single Google Calendar event.
-- "startTime" / "endTime": ISO 8601 datetime WITHOUT a timezone offset (e.g. "2025-04-12T09:00:00"). They will be interpreted in the timezone '${DEFAULT_TIMEZONE}'.
-- "resources": 0-4 high-signal recommendations for THIS task — official docs, well-known tutorials, specific exercises, named books. Only include URLs you're confident exist (https only); omit url if uncertain. Prefer breadth over depth: a doc + a video + an exercise is better than 4 articles.
-- The current date is ${currentDate}. Never schedule tasks in the past — if the requested start date is in the past, shift the plan forward.
-- Mix theory, practice, and review tasks. Build difficulty progressively. Keep individual task duration realistic (typically 30–180 minutes).
-- Match the user's daily/weekly hour availability if it is specified.
-- For refinement requests, preserve the spirit of the previous plan and apply only the requested adjustments.`
-
+// Shared between the buffered /generate-plan and the streaming
+// /generate-plan-stream endpoints. The streaming endpoint emits a slightly
+// different system prompt for the narrative-only call, but the user prompt
+// is identical so we factor it out here.
+function buildPlanUserPrompt(req: GeneratePlanRequest): string {
   const parts: string[] = []
   if (req.refinementInstruction && req.existingPlanTasksForRefinement) {
     parts.push(`***PLAN REFINEMENT REQUEST***`)
@@ -273,8 +303,77 @@ Field rules:
     }
     parts.push(`If completion rate is below 50%, reduce daily intensity and prefer shorter sessions. If above 85%, push slightly harder.`)
   }
-  parts.push(`\nReturn ONLY the JSON object described in the system prompt.`)
-  const userPrompt = parts.join("\n")
+  return parts.join("\n")
+}
+
+// System prompt for the narrative-only streaming call. No JSON — just prose.
+function buildNarrativeSystemPrompt(): string {
+  return `You are an AI specialized in generating structured, realistic learning plans.
+
+Respond in plain Markdown — NO JSON, NO code fences. Write a multi-paragraph narrative summary of the plan, week by week or phase by phase. Keep it concrete (mention specific topics, milestones, and check-points) and motivating. Aim for 200-400 words.`
+}
+
+// System prompt for the structured-tasks call. Same as the combined one, but
+// instructs the model to omit the narrative since the streaming endpoint
+// produces that separately.
+function buildTasksSystemPrompt(currentDate: string): string {
+  return `You are an AI specialized in generating structured, realistic learning plans.
+
+You always respond with a single JSON object — no prose outside it — matching this schema exactly:
+{
+  "structured_tasks": [
+    {
+      "summary": string,
+      "description": string | null,
+      "startTime": string,
+      "endTime": string,
+      "resources": [
+        { "title": string, "url": string | null, "type": "article" | "video" | "course" | "book" | "docs" | "tool" | "other" }
+      ]
+    }
+  ]
+}
+
+Field rules:
+- "structured_tasks": one entry per concrete calendar block. Each task must be schedulable as a single Google Calendar event.
+- "startTime" / "endTime": ISO 8601 datetime WITHOUT a timezone offset (e.g. "2025-04-12T09:00:00"). They will be interpreted in the timezone '${DEFAULT_TIMEZONE}'.
+- "resources": 0-4 high-signal recommendations for THIS task — official docs, well-known tutorials, specific exercises, named books. Only include URLs you're confident exist (https only); omit url if uncertain.
+- The current date is ${currentDate}. Never schedule tasks in the past.
+- Mix theory, practice, and review tasks. Build difficulty progressively. Keep individual task duration realistic (typically 30–180 minutes).
+- Match the user's daily/weekly hour availability if it is specified.`
+}
+
+async function runGeneratePlan(apiKey: string, req: GeneratePlanRequest): Promise<{ tasks: BackendTask[] | null; plan: string }> {
+  const currentDate = new Date().toISOString().split("T")[0]
+  const systemPrompt = `You are an AI specialized in generating structured, realistic learning plans.
+
+You always respond with a single JSON object — no prose outside it — matching this schema exactly:
+{
+  "human_readable_plan": string,
+  "structured_tasks": [
+    {
+      "summary": string,
+      "description": string | null,
+      "startTime": string,
+      "endTime": string,
+      "resources": [
+        { "title": string, "url": string | null, "type": "article" | "video" | "course" | "book" | "docs" | "tool" | "other" }
+      ]
+    }
+  ]
+}
+
+Field rules:
+- "human_readable_plan": a conversational, multi-paragraph narrative summarizing the plan, week by week or phase by phase.
+- "structured_tasks": one entry per concrete calendar block. Each task must be schedulable as a single Google Calendar event.
+- "startTime" / "endTime": ISO 8601 datetime WITHOUT a timezone offset (e.g. "2025-04-12T09:00:00"). They will be interpreted in the timezone '${DEFAULT_TIMEZONE}'.
+- "resources": 0-4 high-signal recommendations for THIS task — official docs, well-known tutorials, specific exercises, named books. Only include URLs you're confident exist (https only); omit url if uncertain. Prefer breadth over depth: a doc + a video + an exercise is better than 4 articles.
+- The current date is ${currentDate}. Never schedule tasks in the past — if the requested start date is in the past, shift the plan forward.
+- Mix theory, practice, and review tasks. Build difficulty progressively. Keep individual task duration realistic (typically 30–180 minutes).
+- Match the user's daily/weekly hour availability if it is specified.
+- For refinement requests, preserve the spirit of the previous plan and apply only the requested adjustments.`
+
+  const userPrompt = `${buildPlanUserPrompt(req)}\n\nReturn ONLY the JSON object described in the system prompt.`
 
   const messages: OpenAIMessage[] = req.chatHistoryForContext
     ? geminiContentsToOpenAIMessages(req.chatHistoryForContext)
@@ -381,6 +480,91 @@ app.post("/generate-plan", async (c) => {
     const { tasks, plan } = await runGeneratePlan(apiKey, parsed.data)
     if (!tasks) return c.json({ detail: plan }, 422)
     return c.json({ humanReadablePlan: plan, structuredTasks: tasks })
+  } catch (e) {
+    return handleServiceError(e, c)
+  }
+})
+
+// Streaming version of /generate-plan. Server-Sent Events with three kinds:
+//   * data: {"type":"narrative","delta":"..."}  — appended to the visible text
+//   * data: {"type":"tasks","tasks":[...]}     — final structured task array
+//   * data: {"type":"error","detail":"..."}    — stream-level failure
+// The narrative call and the tasks call run in parallel, so total latency is
+// max(narrativeTime, tasksTime) — same as the non-streaming endpoint, but the
+// user sees text within the first 500ms.
+app.post("/generate-plan-stream", async (c) => {
+  try {
+    const apiKey = requireGroqKey()
+    const parsed = await parseBody(c, GeneratePlanRequestSchema)
+    if (!parsed.ok) return parsed.response
+    const req = parsed.data
+    const currentDate = new Date().toISOString().split("T")[0]
+
+    const baseMessages: OpenAIMessage[] = req.chatHistoryForContext
+      ? geminiContentsToOpenAIMessages(req.chatHistoryForContext)
+      : []
+    const userPrompt = buildPlanUserPrompt(req)
+
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const encoder = new TextEncoder()
+        const send = (obj: unknown) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`))
+
+        // Kick off the tasks call (non-streaming JSON) immediately so it
+        // overlaps with the streamed narrative — we won't await it here.
+        const tasksPromise = (async () => {
+          const raw = await callGroq(apiKey, {
+            systemPrompt: buildTasksSystemPrompt(currentDate),
+            messages: [...baseMessages, { role: "user", content: `${userPrompt}\n\nReturn ONLY the JSON object described in the system prompt.` }],
+            jsonMode: true,
+            temperature: 0.5,
+          })
+          let payload: unknown
+          try {
+            payload = JSON.parse(raw)
+          } catch {
+            return { tasks: [] as BackendTask[] }
+          }
+          const { structuredTasks } = parseGeneratedPlan(payload)
+          return { tasks: structuredTasks }
+        })()
+
+        // Stream the narrative; forward each delta to the client.
+        try {
+          for await (const delta of streamGroq(apiKey, {
+            systemPrompt: buildNarrativeSystemPrompt(),
+            messages: [...baseMessages, { role: "user", content: userPrompt }],
+            temperature: 0.5,
+          })) {
+            send({ type: "narrative", delta })
+          }
+        } catch (e) {
+          send({ type: "error", detail: (e as Error).message })
+        }
+
+        // Once the narrative is done, await tasks and emit them.
+        try {
+          const { tasks } = await tasksPromise
+          if (tasks.length === 0) {
+            send({ type: "error", detail: "AI did not return any valid scheduled tasks." })
+          } else {
+            send({ type: "tasks", tasks })
+          }
+        } catch (e) {
+          send({ type: "error", detail: (e as Error).message })
+        }
+
+        controller.close()
+      },
+    })
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+      },
+    })
   } catch (e) {
     return handleServiceError(e, c)
   }

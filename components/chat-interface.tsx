@@ -31,7 +31,8 @@ import { useProfileStore } from "@/lib/profile-store";
 import GoogleAuthButton from "@/components/google-auth-button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { fetchGoogleBusySlots } from "@/lib/gcal-busy";
-import { useChatMessage, useGeneratePlan, useIntegratePlan } from "@/hooks/use-api-mutations";
+import { useChatMessage, useIntegratePlan } from "@/hooks/use-api-mutations";
+import { useStreamingPlan } from "@/hooks/use-streaming-plan";
 
 
 
@@ -178,10 +179,10 @@ export default function ChatInterface() {
   // isIntegratingPlan flags. The aliases below preserve the rest of the
   // component's call sites (`isChatting`, etc.) without renaming.
   const chatMutation = useChatMessage();
-  const generatePlanMutation = useGeneratePlan();
+  const streamingPlan = useStreamingPlan();
   const integratePlanMutation = useIntegratePlan();
   const isChatting = chatMutation.isPending;
-  const isGeneratingPlan = generatePlanMutation.isPending;
+  const isGeneratingPlan = streamingPlan.isPending;
   const isIntegratingPlan = integratePlanMutation.isPending;
 
   const [planRequestParams, setPlanRequestParams] = useState<Partial<GeneratePlanRequestPayload>>({});
@@ -401,27 +402,48 @@ export default function ChatInterface() {
 
     if (!directPayload) setCurrentGeneratedPlan(null);
 
-    try {
-      const data = await generatePlanMutation.mutateAsync(payload);
+    // Open the dialog immediately — narrative will fill in as it streams.
+    // We seed `currentGeneratedPlan` with empty tasks so the existing
+    // dialog rendering works; once the stream finishes we replace it with
+    // the structured result.
+    setCurrentGeneratedPlan({
+      title: payload.goal,
+      description: `A plan to ${payload.goal} over ${payload.durationDays} days starting ${payload.startDate}.`,
+      tasks: [],
+      humanReadablePlan: "",
+      originalBackendTasks: [],
+      originalRequestParams: payload,
+    });
+    setTimeout(() => setIsPlanDialogOpen(true), 100);
 
-      const newUIPlan: UIPlan = {
+    try {
+      const result = await streamingPlan.start(payload);
+      if (!result) {
+        // Streaming failed or was aborted — error toast comes from below.
+        throw new Error(streamingPlan.error || "Failed to generate plan");
+      }
+
+      const finalUIPlan: UIPlan = {
         title: payload.goal,
         description: `A plan to ${payload.goal} over ${payload.durationDays} days starting ${payload.startDate}.`,
-        tasks: data.structuredTasks.map(mapBackendTaskToUITask),
-        humanReadablePlan: data.humanReadablePlan,
-        originalBackendTasks: data.structuredTasks,
+        tasks: result.tasks.map(mapBackendTaskToUITask),
+        humanReadablePlan: result.narrative,
+        originalBackendTasks: result.tasks,
         originalRequestParams: payload,
       };
-      setCurrentGeneratedPlan(newUIPlan);
+      setCurrentGeneratedPlan(finalUIPlan);
 
       const planIntroMessage: FrontendMessage = { id: (Date.now() + 10).toString(), text: `Okay, I've ${directPayload ? 'refined the' : 'generated a'} plan for you to "${payload.goal}". You can review it now!`, role: "ai", timestamp: new Date() };
       setMessages(prev => [...prev, planIntroMessage]);
 
-      setTimeout(() => setIsPlanDialogOpen(true), 300);
       toast({ title: `Plan ${directPayload ? 'Refined' : 'Generated'}!`, description: "Your new learning plan is ready." });
     } catch (error) {
       console.error("Generate Plan API error:", error);
       toast({ title: "Error Generating Plan", description: (error as Error).message, variant: "destructive" });
+      // Roll the empty placeholder back so the user doesn't see a half-open
+      // dialog with no content.
+      setCurrentGeneratedPlan(null);
+      setIsPlanDialogOpen(false);
     } finally {
       setRefinementInput("");
     }
@@ -702,11 +724,19 @@ const handleIntegratePlanToCalendar = async () => {
             <DialogDescription className="text-slate-600">
               {currentGeneratedPlan?.description || "Review the tasks for your plan."}
             </DialogDescription>
-            {currentGeneratedPlan?.humanReadablePlan && (
+            {(currentGeneratedPlan?.humanReadablePlan || streamingPlan.narrative) && (
               <ScrollArea className="mt-2 p-2 border rounded-md max-h-40 bg-slate-50 text-sm text-slate-700">
-                <h4 className="font-semibold mb-1">AI's Full Plan Outline:</h4>
-                <pre className="whitespace-pre-wrap font-sans text-xs">{currentGeneratedPlan.humanReadablePlan}</pre>
+                <h4 className="font-semibold mb-1 flex items-center gap-2">
+                  AI's Full Plan Outline:
+                  {isGeneratingPlan && <Loader2 className="h-3 w-3 animate-spin text-purple-500" />}
+                </h4>
+                <pre className="whitespace-pre-wrap font-sans text-xs">{currentGeneratedPlan?.humanReadablePlan || streamingPlan.narrative}</pre>
               </ScrollArea>
+            )}
+            {isGeneratingPlan && (!currentGeneratedPlan?.tasks || currentGeneratedPlan.tasks.length === 0) && (
+              <p className="text-xs text-slate-500 mt-2 flex items-center gap-1">
+                <Loader2 className="h-3 w-3 animate-spin" /> Building your task schedule…
+              </p>
             )}
           </DialogHeader>
 
