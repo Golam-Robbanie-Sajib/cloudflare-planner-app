@@ -400,18 +400,21 @@ export default function ChatInterface() {
       return;
     }
 
-    if (!directPayload) setCurrentGeneratedPlan(null);
+    // Snapshot the prior plan so a refinement / regenerate can still show
+    // the old tasks (and keep "Add to Calendar" enabled) while the new
+    // stream is in flight.
+    const priorTasks = currentGeneratedPlan?.tasks ?? [];
+    const priorBackendTasks = currentGeneratedPlan?.originalBackendTasks ?? [];
 
     // Open the dialog immediately — narrative will fill in as it streams.
-    // We seed `currentGeneratedPlan` with empty tasks so the existing
-    // dialog rendering works; once the stream finishes we replace it with
-    // the structured result.
+    // Keep prior tasks visible during refinement so the UI doesn't blink to
+    // "no tasks" between the old and new plan.
     setCurrentGeneratedPlan({
       title: payload.goal,
       description: `A plan to ${payload.goal} over ${payload.durationDays} days starting ${payload.startDate}.`,
-      tasks: [],
+      tasks: directPayload ? priorTasks : [],
       humanReadablePlan: "",
-      originalBackendTasks: [],
+      originalBackendTasks: directPayload ? priorBackendTasks : [],
       originalRequestParams: payload,
     });
     setTimeout(() => setIsPlanDialogOpen(true), 100);
@@ -461,16 +464,22 @@ export default function ChatInterface() {
 //            syncStatus='failed' with an error. Failed tasks remain visible
 //            in-app with a "Sync failed — retry" affordance.
 const handleIntegratePlanToCalendar = async () => {
-  if (!currentGeneratedPlan || !currentGeneratedPlan.originalBackendTasks) {
-    toast({ title: "No Plan", description: "No plan to integrate.", variant: "destructive" });
+  // The button's disabled prop should prevent this case, but if state got
+  // wedged (e.g. the stream emitted `tasks` after we cleared
+  // currentGeneratedPlan), fall back to the streaming hook's task buffer.
+  const tasksForSync =
+    currentGeneratedPlan?.originalBackendTasks && currentGeneratedPlan.originalBackendTasks.length > 0
+      ? currentGeneratedPlan.originalBackendTasks
+      : streamingPlan.tasks ?? null;
+
+  if (!currentGeneratedPlan || !tasksForSync || tasksForSync.length === 0) {
+    toast({ title: "No Plan", description: "No plan to integrate — try regenerating.", variant: "destructive" });
     return;
   }
   if (!isAuthenticated) {
     toast({ title: "Authentication Required", description: "Please sign in first.", variant: "destructive" });
     return;
   }
-
-  const tasksForSync = currentGeneratedPlan.originalBackendTasks;
 
   // Phase 1a: create the goal (if requested) so tasks can carry goalId.
   let finalGoalId: string | undefined = undefined;
@@ -841,7 +850,17 @@ const handleIntegratePlanToCalendar = async () => {
             <Button
               onClick={handleIntegratePlanToCalendar}
               className="btn-blue"
-              disabled={isIntegratingPlan || !currentGeneratedPlan || currentGeneratedPlan.tasks.length === 0}
+              // Enable as soon as EITHER source has tasks. With streaming,
+              // currentGeneratedPlan.tasks is replaced after the stream
+              // closes; if that swap is interrupted (e.g. user clicked
+              // regenerate, or the tasks event arrived but the post-await
+              // setState hasn't committed yet), the streamingPlan buffer is
+              // the source of truth.
+              disabled={
+                isIntegratingPlan ||
+                !currentGeneratedPlan ||
+                (currentGeneratedPlan.tasks.length === 0 && (streamingPlan.tasks?.length ?? 0) === 0)
+              }
             >
               {isIntegratingPlan ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Plus className="h-4 w-4 mr-2" />}
               Add to Calendar
