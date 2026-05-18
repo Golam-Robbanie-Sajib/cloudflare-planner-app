@@ -62,8 +62,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (storedUserInfo) {
       try {
         const parsed = JSON.parse(storedUserInfo);
-        // Trust the stored info for the initial render to make the UI fast
-        setUserInfo(parsed);
+        // Schema check: any cached userInfo from before the email→uid migration
+        // is missing the `uid` field. Treat those as invalid and clear, so the
+        // next user action forces a fresh sign-in that populates uid. Without
+        // this every uid-keyed Firestore write silently bails (the "Add to
+        // Calendar" button looked broken because addAIGeneratedTasks would
+        // return [] when userInfo.uid was undefined).
+        if (!parsed?.uid) {
+          localStorage.removeItem("userInfo");
+        } else {
+          setUserInfo(parsed);
+        }
       } catch (e) {
         localStorage.removeItem("userInfo");
       }
