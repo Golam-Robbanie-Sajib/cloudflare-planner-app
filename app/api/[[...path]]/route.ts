@@ -286,10 +286,12 @@ function buildPlanUserPrompt(req: GeneratePlanRequest): string {
     if (req.currentSkillLevel) parts.push(`- Current Skill Level: ${req.currentSkillLevel}`)
   }
   if (req.busySlots && req.busySlots.length > 0) {
-    parts.push(`\n***BUSY SLOTS (the user already has these — do NOT schedule overlapping events; pick different times or different days)***`)
+    parts.push(`\n***THE USER'S EXISTING SCHEDULE (Google Calendar + in-app tasks)***`)
+    parts.push(`These time slots are ALREADY BUSY. You MUST avoid overlap — every new task you schedule must fit in a gap between or around these blocks. If a day has no free time of the required duration, move that task to another day.`)
     req.busySlots.slice(0, 50).forEach((s) => {
       parts.push(`- ${s.date} ${s.startTime}–${s.endTime}: ${s.title}`)
     })
+    parts.push(`(End of busy schedule.)`)
   }
   if (req.userProgress) {
     const p = req.userProgress
