@@ -848,19 +848,31 @@ const handleIntegratePlanToCalendar = async () => {
               Close
             </Button>
             <Button
-              onClick={handleIntegratePlanToCalendar}
+              onClick={() => {
+                // Diagnostic log — if the button still misbehaves after this
+                // deploy, this surfaces the exact state at click-time so we
+                // can finally see whether the issue is missing tasks vs an
+                // already-pending mutation vs something else entirely. Cheap
+                // to leave on; the next pass can remove it.
+                // eslint-disable-next-line no-console
+                console.info("[AddToCalendar click]", {
+                  isIntegratingPlan,
+                  currentGeneratedPlan: currentGeneratedPlan
+                    ? {
+                        title: currentGeneratedPlan.title,
+                        tasksCount: currentGeneratedPlan.tasks.length,
+                        backendTasksCount: currentGeneratedPlan.originalBackendTasks?.length ?? 0,
+                      }
+                    : null,
+                  streamingTasksCount: streamingPlan.tasks?.length ?? 0,
+                });
+                handleIntegratePlanToCalendar();
+              }}
               className="btn-blue"
-              // Enable as soon as EITHER source has tasks. With streaming,
-              // currentGeneratedPlan.tasks is replaced after the stream
-              // closes; if that swap is interrupted (e.g. user clicked
-              // regenerate, or the tasks event arrived but the post-await
-              // setState hasn't committed yet), the streamingPlan buffer is
-              // the source of truth.
-              disabled={
-                isIntegratingPlan ||
-                !currentGeneratedPlan ||
-                (currentGeneratedPlan.tasks.length === 0 && (streamingPlan.tasks?.length ?? 0) === 0)
-              }
+              // Only block during an in-flight mutation. Empty-plan / missing-
+              // auth cases are handled by the handler, which toasts a clear
+              // message instead of silently disabling the button.
+              disabled={isIntegratingPlan}
             >
               {isIntegratingPlan ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Plus className="h-4 w-4 mr-2" />}
               Add to Calendar
