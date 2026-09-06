@@ -11,6 +11,10 @@ import {
   deleteTask as deleteTaskFromFirestore,
   subscribeToTasks,
 } from "./firestore-calendar"
+import { updateGoal as updateGoalInFirestore } from "./firestore-goals"
+import { appendProgressEvent } from "./firestore-progress"
+import { useProfileStore } from "./profile-store"
+import { todayDateString } from "./progress"
 import { Timestamp } from "firebase/firestore"
 
 export interface AIGeneratedTaskInput {
@@ -38,6 +42,8 @@ interface CalendarStore {
   addTask: (taskData: Omit<CalendarTask, 'id' | 'createdAt' | 'updatedAt'>) => Promise<string | null>
   updateTask: (id: string, updates: Partial<CalendarTask>) => Promise<void>
   toggleTask: (id: string) => Promise<void>
+  /** Set a task aside without penalty. Neutral for streaks and progression. */
+  skipTask: (id: string) => Promise<void>
   deleteTask: (id: string) => Promise<void>
   // Returns the IDs of the tasks just written so the caller can update their
   // sync status after talking to Google Calendar.
@@ -57,6 +63,9 @@ const parseIsoSafely = (iso: string): Date | null => {
 export function CalendarProvider({ children }: { children: ReactNode }) {
   const [tasks, setTasks] = useState<CalendarTask[]>([])
   const [loading, setLoading] = useState(true)
+  // ProfileProvider wraps CalendarProvider in app/layout.tsx, so this is safe.
+  // Used purely to resolve day keys in the user's own timezone.
+  const { profile } = useProfileStore()
   const { userInfo, isAuthenticated } = useAuth()
 
   useEffect(() => {
@@ -99,6 +108,56 @@ export function CalendarProvider({ children }: { children: ReactNode }) {
       completed: nowDone,
       completedAt: nowDone ? Timestamp.now() : null,
     })
+
+    // Append to the immutable log. Un-completing nulls `completedAt` on the
+    // task doc, so without this the evidence that the work ever happened is
+    // destroyed and week-over-week comparisons become impossible.
+    void appendProgressEvent(userInfo.uid, {
+      type: nowDone ? "task_completed" : "task_uncompleted",
+      taskId: id,
+      goalId: task.goalId,
+      scheduledFor: task.date,
+      dayKey: todayDateString(profile?.timezone),
+    })
+
+    // Roll the parent goal's status forward/back. Without this a goal whose
+    // tasks are all finished stays "in_progress" forever — status was only
+    // ever set by hand.
+    if (task.goalId) {
+      const siblings = tasks.filter(t => t.goalId === task.goalId)
+      const remaining = siblings.filter(t => (t.id === id ? !nowDone : !t.completed)).length
+      try {
+        if (remaining === 0) {
+          await updateGoalInFirestore(userInfo.uid, task.goalId, { status: "completed" })
+        } else if (nowDone === false) {
+          // Un-checking a task on a finished goal reopens it.
+          await updateGoalInFirestore(userInfo.uid, task.goalId, { status: "in_progress" })
+        }
+      } catch (e) {
+        // Non-fatal: the task toggle already succeeded, and goal status is
+        // derived state we can recompute. Don't fail the user's click.
+        console.warn("Could not roll up goal status", e)
+      }
+    }
+  }
+
+  const skipTask = async (id: string) => {
+    const task = tasks.find(t => t.id === id)
+    if (!task || !userInfo?.uid) return
+    const nowSkipped = !task.skipped
+    await updateTaskInFirestore(userInfo.uid, id, {
+      skipped: nowSkipped,
+      skippedAt: nowSkipped ? Timestamp.now() : null,
+    })
+    if (nowSkipped) {
+      void appendProgressEvent(userInfo.uid, {
+        type: "task_skipped",
+        taskId: id,
+        goalId: task.goalId,
+        scheduledFor: task.date,
+        dayKey: todayDateString(profile?.timezone),
+      })
+    }
   }
 
   const deleteTask = async (id: string) => {
@@ -160,6 +219,7 @@ export function CalendarProvider({ children }: { children: ReactNode }) {
       addTask,
       updateTask,
       toggleTask,
+      skipTask,
       deleteTask,
       addAIGeneratedTasks,
       applySyncResults,

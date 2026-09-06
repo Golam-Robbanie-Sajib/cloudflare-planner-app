@@ -32,13 +32,36 @@ import {
 export const runtime = "edge"
 
 const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+// Model IDs are env-overridable so they can be swapped from the Cloudflare
+// dashboard without a code deploy (Groq deprecates/renames models on its own
+// schedule). Set GROQ_FAST_MODEL / GROQ_SMART_MODEL to the exact ID from
+// https://console.groq.com/docs/models — a wrong ID fails the request at
+// runtime with a 404 from Groq, so verify against that list before switching.
+//
 // Cheap & fast classifier for /chat-message (intent + param extraction).
-const GROQ_FAST_MODEL = "llama-3.1-8b-instant"
+const GROQ_FAST_MODEL = process.env.GROQ_FAST_MODEL || "llama-3.1-8b-instant"
 // Heavyweight model for plan generation and quizzes — quality matters more
 // than latency for these.
-const GROQ_SMART_MODEL = "openai/gpt-oss-120b"
+const GROQ_SMART_MODEL = process.env.GROQ_SMART_MODEL || "openai/gpt-oss-120b"
 const CALENDAR_API_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
-const DEFAULT_TIMEZONE = "Asia/Dhaka"
+// Last-resort fallback only. Every request should carry the user's own
+// timezone (from UserProfile.timezone); this is what we use when an old
+// client omits it. Previously this was applied unconditionally, which meant
+// a user in New York scheduling 9am got a Google Calendar event at 9am
+// Dhaka — 11pm the previous day for them.
+const FALLBACK_TIMEZONE = "Asia/Dhaka"
+
+// Validates an IANA name against the runtime's own tz database before we
+// hand it to Google. An unknown zone would make the Calendar insert fail.
+function resolveTimeZone(candidate?: string): string {
+  if (!candidate) return FALLBACK_TIMEZONE
+  try {
+    new Intl.DateTimeFormat("en-CA", { timeZone: candidate }).format(new Date())
+    return candidate
+  } catch {
+    return FALLBACK_TIMEZONE
+  }
+}
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -286,10 +309,12 @@ function buildPlanUserPrompt(req: GeneratePlanRequest): string {
     if (req.currentSkillLevel) parts.push(`- Current Skill Level: ${req.currentSkillLevel}`)
   }
   if (req.busySlots && req.busySlots.length > 0) {
-    parts.push(`\n***BUSY SLOTS (the user already has these — do NOT schedule overlapping events; pick different times or different days)***`)
+    parts.push(`\n***THE USER'S EXISTING SCHEDULE (Google Calendar + in-app tasks)***`)
+    parts.push(`These time slots are ALREADY BUSY. You MUST avoid overlap — every new task you schedule must fit in a gap between or around these blocks. If a day has no free time of the required duration, move that task to another day.`)
     req.busySlots.slice(0, 50).forEach((s) => {
       parts.push(`- ${s.date} ${s.startTime}–${s.endTime}: ${s.title}`)
     })
+    parts.push(`(End of busy schedule.)`)
   }
   if (req.userProgress) {
     const p = req.userProgress
@@ -302,7 +327,15 @@ function buildPlanUserPrompt(req: GeneratePlanRequest): string {
       parts.push(`- Active goals already in progress (DO NOT overbook the user — distribute the new plan across days where they have headroom):`)
       p.activeGoals.forEach((g) => parts.push(`    • "${g.title}": ${g.tasksRemaining} tasks remaining (~${g.estimatedHoursRemaining}h)`))
     }
+    if (p.difficultyGuidance) {
+      parts.push(`\n***HOW TO PITCH THIS PLAN***`)
+      parts.push(p.difficultyGuidance)
+    }
     parts.push(`If completion rate is below 50%, reduce daily intensity and prefer shorter sessions. If above 85%, push slightly harder.`)
+    // The single most important scheduling instruction we give the model when
+    // someone has fallen behind. Pushing the original plan later snowballs;
+    // shrinking it converges.
+    parts.push(`CRITICAL: when the user is behind, do NOT simply shift the remaining tasks to later dates. Reduce the SCOPE and DIFFICULTY of what remains so it fits the time they actually have between now and the target date.`)
   }
   return parts.join("\n")
 }
@@ -317,7 +350,7 @@ Respond in plain Markdown — NO JSON, NO code fences. Write a multi-paragraph n
 // System prompt for the structured-tasks call. Same as the combined one, but
 // instructs the model to omit the narrative since the streaming endpoint
 // produces that separately.
-function buildTasksSystemPrompt(currentDate: string): string {
+function buildTasksSystemPrompt(currentDate: string, timeZone: string): string {
   return `You are an AI specialized in generating structured, realistic learning plans.
 
 You always respond with a single JSON object — no prose outside it — matching this schema exactly:
@@ -337,7 +370,7 @@ You always respond with a single JSON object — no prose outside it — matchin
 
 Field rules:
 - "structured_tasks": one entry per concrete calendar block. Each task must be schedulable as a single Google Calendar event.
-- "startTime" / "endTime": ISO 8601 datetime WITHOUT a timezone offset (e.g. "2025-04-12T09:00:00"). They will be interpreted in the timezone '${DEFAULT_TIMEZONE}'.
+- "startTime" / "endTime": ISO 8601 datetime WITHOUT a timezone offset (e.g. "2025-04-12T09:00:00"). They will be interpreted in the timezone '${timeZone}'.
 - "resources": 0-4 high-signal recommendations for THIS task — official docs, well-known tutorials, specific exercises, named books. Only include URLs you're confident exist (https only); omit url if uncertain.
 - The current date is ${currentDate}. Never schedule tasks in the past.
 - Mix theory, practice, and review tasks. Build difficulty progressively. Keep individual task duration realistic (typically 30–180 minutes).
@@ -346,6 +379,7 @@ Field rules:
 
 async function runGeneratePlan(apiKey: string, req: GeneratePlanRequest): Promise<{ tasks: BackendTask[] | null; plan: string }> {
   const currentDate = new Date().toISOString().split("T")[0]
+  const timeZone = resolveTimeZone(req.timeZone)
   const systemPrompt = `You are an AI specialized in generating structured, realistic learning plans.
 
 You always respond with a single JSON object — no prose outside it — matching this schema exactly:
@@ -367,7 +401,7 @@ You always respond with a single JSON object — no prose outside it — matchin
 Field rules:
 - "human_readable_plan": a conversational, multi-paragraph narrative summarizing the plan, week by week or phase by phase.
 - "structured_tasks": one entry per concrete calendar block. Each task must be schedulable as a single Google Calendar event.
-- "startTime" / "endTime": ISO 8601 datetime WITHOUT a timezone offset (e.g. "2025-04-12T09:00:00"). They will be interpreted in the timezone '${DEFAULT_TIMEZONE}'.
+- "startTime" / "endTime": ISO 8601 datetime WITHOUT a timezone offset (e.g. "2025-04-12T09:00:00"). They will be interpreted in the timezone '${timeZone}'.
 - "resources": 0-4 high-signal recommendations for THIS task — official docs, well-known tutorials, specific exercises, named books. Only include URLs you're confident exist (https only); omit url if uncertain. Prefer breadth over depth: a doc + a video + an exercise is better than 4 articles.
 - The current date is ${currentDate}. Never schedule tasks in the past — if the requested start date is in the past, shift the plan forward.
 - Mix theory, practice, and review tasks. Build difficulty progressively. Keep individual task duration realistic (typically 30–180 minutes).
@@ -403,6 +437,7 @@ async function pushTasksToGoogleCalendar(
   skillName: string,
   tasks: BackendTask[],
   accessToken: string,
+  timeZone: string,
 ): Promise<{ message: string; results: { index: number; status: "synced" | "failed"; googleEventId?: string; googleEventLink?: string; error?: string }[] }> {
   const results: { index: number; status: "synced" | "failed"; googleEventId?: string; googleEventLink?: string; error?: string }[] = []
   for (let i = 0; i < tasks.length; i++) {
@@ -410,8 +445,8 @@ async function pushTasksToGoogleCalendar(
     const eventBody = {
       summary: t.summary || `${skillName} Task`,
       description: t.description || "",
-      start: { dateTime: t.startTime, timeZone: DEFAULT_TIMEZONE },
-      end: { dateTime: t.endTime, timeZone: DEFAULT_TIMEZONE },
+      start: { dateTime: t.startTime, timeZone },
+      end: { dateTime: t.endTime, timeZone },
     }
     try {
       const response = await fetch(CALENDAR_API_URL, {
@@ -530,6 +565,7 @@ app.post("/generate-plan-stream", async (c) => {
     if (!parsed.ok) return parsed.response
     const req = parsed.data
     const currentDate = new Date().toISOString().split("T")[0]
+    const timeZone = resolveTimeZone(req.timeZone)
 
     const baseMessages: OpenAIMessage[] = req.chatHistoryForContext
       ? geminiContentsToOpenAIMessages(req.chatHistoryForContext)
@@ -545,7 +581,7 @@ app.post("/generate-plan-stream", async (c) => {
         // overlaps with the streamed narrative — we won't await it here.
         const tasksPromise = (async () => {
           const raw = await callGroq(apiKey, {
-            systemPrompt: buildTasksSystemPrompt(currentDate),
+            systemPrompt: buildTasksSystemPrompt(currentDate, timeZone),
             messages: [...baseMessages, { role: "user", content: `${userPrompt}\n\nReturn ONLY the JSON object described in the system prompt.` }],
             jsonMode: true,
             temperature: 0.5,
@@ -608,7 +644,12 @@ app.post("/integrate-plan", async (c) => {
     if (!accessToken) return c.json({ detail: "Authorization header is missing" }, 401)
     const parsed = await parseBody(c, IntegratePlanRequestSchema)
     if (!parsed.ok) return parsed.response
-    const { message, results } = await pushTasksToGoogleCalendar(parsed.data.skillName, parsed.data.structuredTasks, accessToken)
+    const { message, results } = await pushTasksToGoogleCalendar(
+      parsed.data.skillName,
+      parsed.data.structuredTasks,
+      accessToken,
+      resolveTimeZone(parsed.data.timeZone),
+    )
     const calendarEventLinks = results.filter((r) => r.status === "synced" && r.googleEventLink).map((r) => r.googleEventLink as string)
     return c.json({ message, results, calendarEventLinks })
   } catch (e) {
@@ -624,6 +665,7 @@ app.post("/reschedule-event", async (c) => {
     const parsed = await parseBody(c, RescheduleRequestSchema)
     if (!parsed.ok) return parsed.response
     const { googleEventId, startTime, endTime } = parsed.data
+    const timeZone = resolveTimeZone(parsed.data.timeZone)
 
     const url = `${CALENDAR_API_URL}/${encodeURIComponent(googleEventId)}`
     const response = await fetch(url, {
@@ -633,8 +675,8 @@ app.post("/reschedule-event", async (c) => {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        start: { dateTime: startTime, timeZone: DEFAULT_TIMEZONE },
-        end: { dateTime: endTime, timeZone: DEFAULT_TIMEZONE },
+        start: { dateTime: startTime, timeZone },
+        end: { dateTime: endTime, timeZone },
       }),
     })
     if (!response.ok) {

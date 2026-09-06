@@ -30,6 +30,22 @@ service cloud.firestore {
       match /profile/{profileDoc} {
         allow read, write: if isOwner(userId);
       }
+
+      // Append-only progress event log. Create is allowed; update and delete
+      // are denied even for the owner, because the whole point of the log is
+      // that history can't be rewritten. Derived rollups are recomputable
+      // from it, so a corrupted rollup is recoverable but a mutated event
+      // is not.
+      match /events/{eventId} {
+        allow read, create: if isOwner(userId);
+        allow update, delete: if false;
+      }
+
+      // Per-day rollups. Derived cache — freely writable by the owner, since
+      // rebuildDayRollup() can always regenerate them from the event log.
+      match /days/{dayKey} {
+        allow read, write: if isOwner(userId);
+      }
     }
 
     // Publicly shared, read-only plan snapshots. Anyone with the slug can

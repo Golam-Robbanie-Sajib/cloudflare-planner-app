@@ -35,6 +35,12 @@ export interface CalendarTask {
   type: "task" | "event"
   completed: boolean
   completedAt?: Timestamp | null
+  // Explicitly set aside by the user — NOT a failure. Way of Life's
+  // Yes/No/Skip model: a skipped day is neutral, so it neither breaks a
+  // streak nor decays the goal's progression level. Without this, "I was
+  // ill on Tuesday" is indistinguishable from "I blew it off".
+  skipped?: boolean
+  skippedAt?: Timestamp | null
   location?: string
   attendees?: number
   source: "user" | "ai"

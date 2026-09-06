@@ -28,7 +28,10 @@ export default function FriendsPage() {
   const { profile, updateProfile } = useProfileStore()
   const { tasks } = useCalendarStore()
 
-  const myStats = useMemo(() => computeProgress(tasks), [tasks])
+  const myStats = useMemo(
+    () => computeProgress(tasks, { timeZone: profile?.timezone }),
+    [tasks, profile?.timezone],
+  )
   const [friendInput, setFriendInput] = useState("")
   const [loading, setLoading] = useState(false)
   const [friends, setFriends] = useState<PublicProfile[]>([])

@@ -6,6 +6,7 @@ import Calendar from "@/components/calendar";
 import ChatInterface from "@/components/chat-interface";
 import UpcomingEvents from "@/components/upcoming-events";
 import TodayWidget from "@/components/today-widget";
+import RealignmentPrompt from "@/components/realignment-prompt";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Drawer, DrawerContent, DrawerTitle, DrawerDescription, DrawerTrigger } from "@/components/ui/drawer";
@@ -21,6 +22,7 @@ export default function MainDashboard() {
       {/* Left Section */}
       {/* STEP 2: Make this column independently scrollable */}
       <div className="w-full md:w-[70%] border-r border-slate-200 p-6 overflow-y-auto h-[calc(100vh-4rem)]">
+        <RealignmentPrompt />
         <TodayWidget />
         <Tabs defaultValue="daily" className="w-full">
           <TabsList className="grid w-full grid-cols-3 bg-slate-100 p-1 rounded-xl">

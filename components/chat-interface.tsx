@@ -6,7 +6,7 @@ import type React from "react"
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useState, useRef, useEffect } from "react"
-import { Send, CalendarIcon, Bot, User, Plus, Loader2, RefreshCw, Edit, Mic, MicOff } from "lucide-react"
+import { Send, CalendarIcon, Bot, User, Plus, Loader2, RefreshCw, Edit, Mic, MicOff, AlertTriangle } from "lucide-react"
 import { useSpeechInput } from "@/hooks/use-speech-input"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -28,6 +28,10 @@ import { Textarea } from "@/components/ui/textarea"
 import { useAuth } from "@/lib/auth-context"
 import { useGoalStore } from "@/lib/goal-store";
 import { useProfileStore } from "@/lib/profile-store";
+import { computeProgress } from "@/lib/progress";
+import { assessFeasibility } from "@/lib/plan-health";
+import { computeProgressionLevel, difficultyGuidanceFor } from "@/lib/progression";
+import { Timestamp } from "firebase/firestore";
 import GoogleAuthButton from "@/components/google-auth-button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { fetchGoogleBusySlots } from "@/lib/gcal-busy";
@@ -101,9 +105,13 @@ export default function ChatInterface() {
   // /generate-plan call so the AI tunes the new plan to actual completion rate.
   const computeProgressSignal = (): UserProgressSignal | undefined => {
     if (!allTasks || allTasks.length === 0) return undefined;
-    const total = allTasks.length;
-    const completed = allTasks.filter(t => t.completed).length;
-    if (total < 3) return undefined; // not enough signal yet
+    // Single source of truth for the derived numbers — same helper the Today
+    // widget and leaderboard use, so the AI can't be told something different
+    // from what the user is looking at.
+    const stats = computeProgress(allTasks, { timeZone: profile?.timezone });
+    if (stats.totalTasks < 3) return undefined; // not enough signal yet
+    // Replayed from task outcomes — no stored counter to drift.
+    const progression = computeProgressionLevel({ tasks: allTasks, timeZone: profile?.timezone });
     const completedTitles = allTasks
       .filter(t => t.completed)
       .sort((a, b) => {
@@ -113,12 +121,7 @@ export default function ChatInterface() {
       })
       .slice(0, 5)
       .map(t => t.title);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const missed = allTasks
-      .filter(t => !t.completed && new Date(t.date + "T00:00:00") < today)
-      .slice(-5)
-      .map(t => t.title);
+    const missed = stats.overdueTasks.slice(-5).map(t => t.title);
     // Multi-goal load summary. Estimate hours by parsing "HH:MM" task ranges.
     const goalsLoad = goals
       .filter(g => g.status !== "completed")
@@ -135,28 +138,67 @@ export default function ChatInterface() {
       .filter(g => g.tasksRemaining > 0)
       .slice(0, 10);
     return {
-      completionRate: completed / total,
-      completedTasks: completed,
-      totalTasks: total,
+      completionRate: stats.completionRate ?? stats.totalCompleted / stats.totalTasks,
+      completedTasks: stats.totalCompleted,
+      totalTasks: stats.totalTasks,
+      // avgDelayDays has been declared in the schema and rendered into the
+      // prompt since the Groq migration, but was never computed — the AI was
+      // being told about slippage that never fired. Now it's real.
+      ...(stats.avgDelayDays !== undefined ? { avgDelayDays: stats.avgDelayDays } : {}),
       recentlyCompleted: completedTitles,
       recentlyMissed: missed,
       ...(goalsLoad.length ? { activeGoals: goalsLoad } : {}),
+      // Adaptive difficulty: the AI gets the user's current level and an
+      // explicit instruction to scale scope rather than push dates.
+      progressionLevel: progression.level,
+      difficultyGuidance: difficultyGuidanceFor(progression),
     };
   };
 
   // Active, future (or today's) tasks that aren't yet completed — sent to the
   // AI as busy slots so the generated plan doesn't collide with the user's
   // existing commitments. Capped at 50 entries to keep prompts compact.
-  const computeBusySlots = () => {
+  // `excludeIds` lets the refinement path drop the plan-being-refined from
+  // the busy set — otherwise the AI sees those slots as taken and refuses
+  // to reschedule them.
+  const computeBusySlots = (excludeIds?: Set<string>) => {
     if (!allTasks || allTasks.length === 0) return undefined;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const future = allTasks
       .filter(t => !t.completed && new Date(t.date + "T00:00:00") >= today)
+      .filter(t => !excludeIds || !excludeIds.has(t.id))
       .sort((a, b) => (a.date + a.startTime).localeCompare(b.date + b.startTime))
       .slice(0, 50)
       .map(t => ({ date: t.date, startTime: t.startTime, endTime: t.endTime, title: t.title }));
     return future.length ? future : undefined;
+  };
+
+  // Shared between handleRequestPlanGeneration and handleRefinePlan so both
+  // paths see the user's full schedule (in-app + Google Calendar). Returns
+  // null on failure — non-fatal; planning still works without external data.
+  const buildMergedBusySlots = async (
+    startDate: string,
+    durationDays: number,
+    excludeIds?: Set<string>,
+  ): Promise<{ slots: { date: string; startTime: string; endTime: string; title: string }[]; gcalCount: number; appCount: number }> => {
+    const inApp = computeBusySlots(excludeIds) ?? [];
+    let external: { date: string; startTime: string; endTime: string; title: string }[] = [];
+    const token = getAccessToken();
+    if (token) {
+      try {
+        external = await fetchGoogleBusySlots(
+          token,
+          new Date(startDate + "T00:00:00"),
+          durationDays,
+          80,
+        );
+      } catch {
+        external = [];
+      }
+    }
+    const slots = [...inApp, ...external].slice(0, 80);
+    return { slots, gcalCount: external.length, appCount: inApp.length };
   };
  
   const [messages, setMessages] = useState<FrontendMessage[]>([
@@ -174,6 +216,11 @@ export default function ChatInterface() {
   const [currentGeneratedPlan, setCurrentGeneratedPlan] = useState<UIPlan | null>(null);
   const [isPlanDialogOpen, setIsPlanDialogOpen] = useState(false);
   const [refinementInput, setRefinementInput] = useState("");
+  // Surfaced in the plan dialog so the user knows the AI is actually
+  // considering their existing schedule rather than planning blind.
+  const [busyContext, setBusyContext] = useState<{ gcalCount: number; appCount: number } | null>(null);
+  // Set when the requested plan doesn't fit the user's real free time.
+  const [feasibilityNote, setFeasibilityNote] = useState<string | null>(null);
 
   // TanStack Query mutations replace the ad-hoc isChatting/isGeneratingPlan/
   // isIntegratingPlan flags. The aliases below preserve the rest of the
@@ -362,38 +409,77 @@ export default function ChatInterface() {
 
   const handleRequestPlanGeneration = async (directPayload?: GeneratePlanRequestPayload) => {
     // Merge in-app future tasks + external Google Calendar events so the AI
-    // sees the user's true schedule, not just the app-managed bits.
-    let mergedBusy = computeBusySlots() ?? [];
-    const tokenForBusy = getAccessToken();
-    if (tokenForBusy) {
-      try {
-        const startDate = planRequestParams.startDate
-          ? new Date(planRequestParams.startDate + "T00:00:00")
-          : new Date();
-        const external = await fetchGoogleBusySlots(
-          tokenForBusy,
-          startDate,
-          planRequestParams.durationDays || 14,
-          80,
-        );
-        mergedBusy = [...mergedBusy, ...external].slice(0, 80);
-      } catch {
-        // Non-fatal: planning still works without external busy data.
-      }
+    // sees the user's true schedule, not just the app-managed bits. For a
+    // refinement (directPayload) we exclude the plan-being-refined's own
+    // tasks from the busy set — otherwise the AI sees those slots as taken
+    // and can't reschedule them.
+    const refinementGoalId = directPayload?.refinementInstruction
+      ? currentGeneratedPlan?.originalRequestParams?.goal
+      : undefined;
+    const excludeIds = refinementGoalId
+      ? new Set(
+          allTasks
+            .filter(t => t.goalId && goals.find(g => g.id === t.goalId)?.title === refinementGoalId)
+            .map(t => t.id),
+        )
+      : undefined;
+    const startDateForBusy = (directPayload?.startDate || planRequestParams.startDate)
+      ?? new Date(Date.now() + 86400000).toISOString().split("T")[0];
+    const durationForBusy = directPayload?.durationDays || planRequestParams.durationDays || 14;
+    const { slots: mergedBusy, gcalCount, appCount } = await buildMergedBusySlots(
+      startDateForBusy,
+      durationForBusy,
+      excludeIds,
+    );
+    setBusyContext({ gcalCount, appCount });
+
+    // Prospective capacity check (Sunsama's model): tell the user the plan
+    // doesn't fit BEFORE we build it, rather than letting them discover the
+    // pile five days in. We warn but still generate — it's their call, and
+    // the AI is told to compress rather than refuse.
+    const dailyHoursForCheck = directPayload?.dailyHours || planRequestParams.dailyHours || 2;
+    const feasibility = assessFeasibility({
+      startDate: startDateForBusy,
+      durationDays: durationForBusy,
+      dailyHours: dailyHoursForCheck,
+      busySlots: mergedBusy,
+    });
+    setFeasibilityNote(
+      feasibility.feasible
+        ? null
+        : `Your calendar only leaves about ${Math.round(feasibility.totalFreeHours)}h free across these ${durationForBusy} days, and ${feasibility.tightDays.length} day${feasibility.tightDays.length === 1 ? " has" : "s have"} no room for a ${dailyHoursForCheck}h session. The plan will aim for shorter sessions where it has to.`,
+    );
+    if (!feasibility.feasible) {
+      toast({
+        title: "Tight schedule",
+        description: `${feasibility.tightDays.length} of ${durationForBusy} days are heavily booked. Generating a lighter plan that fits.`,
+      });
     }
 
-    const payload: GeneratePlanRequestPayload = directPayload || {
-      goal: planRequestParams.goal || "Learning Goal",
-      durationDays: planRequestParams.durationDays || 7,
-      startDate: planRequestParams.startDate || new Date(Date.now() + 86400000).toISOString().split("T")[0],
-      dailyHours: planRequestParams.dailyHours || 2,
-      learningStyle: planRequestParams.learningStyle,
-      preferredTime: planRequestParams.preferredTime,
-      currentSkillLevel: planRequestParams.currentSkillLevel,
-      chatHistoryForContext: mapMessagesToBackendHistory(messages),
-      userProgress: computeProgressSignal(),
-      busySlots: mergedBusy.length ? mergedBusy : undefined,
-    };
+    // Refinement flow passes a partial directPayload — we still inject our
+    // merged busySlots so the refinement gets the same schedule awareness
+    // as a fresh plan.
+    const payload: GeneratePlanRequestPayload = directPayload
+      ? {
+          ...directPayload,
+          busySlots: mergedBusy.length ? mergedBusy : undefined,
+          timeZone: profile?.timezone,
+        }
+      : {
+          goal: planRequestParams.goal || "Learning Goal",
+          durationDays: planRequestParams.durationDays || 7,
+          startDate: planRequestParams.startDate || new Date(Date.now() + 86400000).toISOString().split("T")[0],
+          dailyHours: planRequestParams.dailyHours || 2,
+          learningStyle: planRequestParams.learningStyle,
+          preferredTime: planRequestParams.preferredTime,
+          currentSkillLevel: planRequestParams.currentSkillLevel,
+          chatHistoryForContext: mapMessagesToBackendHistory(messages),
+          userProgress: computeProgressSignal(),
+          busySlots: mergedBusy.length ? mergedBusy : undefined,
+          // The AI schedules wall-clock times; it needs to know which zone
+          // those times are in, and so does the Google Calendar write.
+          timeZone: profile?.timezone,
+        };
 
     if (!payload.goal || !payload.durationDays || !payload.startDate) {
       toast({ title: "Missing Details", description: "Please specify a goal, duration (in days), and start date for the plan.", variant: "destructive" });
@@ -486,10 +572,22 @@ const handleIntegratePlanToCalendar = async () => {
   let taskIds: string[] = [];
   try {
     if (goalInputForDialog.trim() !== "") {
+      // Derive a real deadline from the plan's last scheduled task. Until now
+      // UserGoal.targetDate had zero reads and zero writes anywhere in the
+      // repo, which meant "behind schedule" wasn't even expressible.
+      const lastTaskDate = tasksForSync
+        .map(t => t.startTime.split("T")[0])
+        .sort()
+        .at(-1);
+      const targetDate = lastTaskDate
+        ? Timestamp.fromDate(new Date(lastTaskDate + "T23:59:59"))
+        : undefined;
+
       const newGoalId = await addGoal({
         title: goalInputForDialog.trim(),
         description: `Goal for the plan: ${currentGeneratedPlan.title}`,
         status: "in_progress",
+        ...(targetDate ? { targetDate } : {}),
       });
       if (newGoalId) finalGoalId = newGoalId;
     }
@@ -504,6 +602,9 @@ const handleIntegratePlanToCalendar = async () => {
     const data = await integratePlanMutation.mutateAsync({
       skillName: currentGeneratedPlan.title,
       structuredTasks: tasksForSync,
+      // Without this the backend falls back to a fixed zone and the Google
+      // Calendar events land at the wrong wall-clock time for the user.
+      timeZone: profile?.timezone,
     });
 
     // Map per-task Google results back onto the Firestore task IDs by index.
@@ -578,7 +679,10 @@ const handleIntegratePlanToCalendar = async () => {
       refinementInstruction: refinementInput,
       existingPlanTasksForRefinement: currentGeneratedPlan.originalBackendTasks,
       userProgress: computeProgressSignal(),
-      busySlots: computeBusySlots(),
+      // Leave busySlots undefined here — handleRequestPlanGeneration will
+      // build them (with GCal events merged in and this goal's own tasks
+      // excluded). Keeping it out of the payload avoids double-work and
+      // means the refinement flow gets parity with the new-plan flow.
     };
     
     handleRequestPlanGeneration(refinementPayload);
@@ -733,6 +837,20 @@ const handleIntegratePlanToCalendar = async () => {
             <DialogDescription className="text-slate-600">
               {currentGeneratedPlan?.description || "Review the tasks for your plan."}
             </DialogDescription>
+            {busyContext && (busyContext.appCount + busyContext.gcalCount > 0) && (
+              <p className="text-xs text-slate-500 mt-2 flex items-center gap-1.5">
+                <CalendarIcon className="h-3 w-3 text-purple-500" />
+                Planned around{" "}
+                <span className="font-medium text-slate-700">{busyContext.gcalCount}</span> Google Calendar event{busyContext.gcalCount === 1 ? "" : "s"} and{" "}
+                <span className="font-medium text-slate-700">{busyContext.appCount}</span> in-app task{busyContext.appCount === 1 ? "" : "s"}.
+              </p>
+            )}
+            {feasibilityNote && (
+              <p className="text-xs mt-2 flex items-start gap-1.5 rounded-md border border-amber-300 bg-amber-50 p-2 text-amber-800">
+                <AlertTriangle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+                <span>{feasibilityNote}</span>
+              </p>
+            )}
             {(currentGeneratedPlan?.humanReadablePlan || streamingPlan.narrative) && (
               <ScrollArea className="mt-2 p-2 border rounded-md max-h-40 bg-slate-50 text-sm text-slate-700">
                 <h4 className="font-semibold mb-1 flex items-center gap-2">
@@ -848,19 +966,31 @@ const handleIntegratePlanToCalendar = async () => {
               Close
             </Button>
             <Button
-              onClick={handleIntegratePlanToCalendar}
+              onClick={() => {
+                // Diagnostic log — if the button still misbehaves after this
+                // deploy, this surfaces the exact state at click-time so we
+                // can finally see whether the issue is missing tasks vs an
+                // already-pending mutation vs something else entirely. Cheap
+                // to leave on; the next pass can remove it.
+                // eslint-disable-next-line no-console
+                console.info("[AddToCalendar click]", {
+                  isIntegratingPlan,
+                  currentGeneratedPlan: currentGeneratedPlan
+                    ? {
+                        title: currentGeneratedPlan.title,
+                        tasksCount: currentGeneratedPlan.tasks.length,
+                        backendTasksCount: currentGeneratedPlan.originalBackendTasks?.length ?? 0,
+                      }
+                    : null,
+                  streamingTasksCount: streamingPlan.tasks?.length ?? 0,
+                });
+                handleIntegratePlanToCalendar();
+              }}
               className="btn-blue"
-              // Enable as soon as EITHER source has tasks. With streaming,
-              // currentGeneratedPlan.tasks is replaced after the stream
-              // closes; if that swap is interrupted (e.g. user clicked
-              // regenerate, or the tasks event arrived but the post-await
-              // setState hasn't committed yet), the streamingPlan buffer is
-              // the source of truth.
-              disabled={
-                isIntegratingPlan ||
-                !currentGeneratedPlan ||
-                (currentGeneratedPlan.tasks.length === 0 && (streamingPlan.tasks?.length ?? 0) === 0)
-              }
+              // Only block during an in-flight mutation. Empty-plan / missing-
+              // auth cases are handled by the handler, which toasts a clear
+              // message instead of silently disabling the button.
+              disabled={isIntegratingPlan}
             >
               {isIntegratingPlan ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Plus className="h-4 w-4 mr-2" />}
               Add to Calendar

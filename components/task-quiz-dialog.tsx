@@ -6,6 +6,9 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Button } from "@/components/ui/button"
 import { Loader2, Check, X, BookOpen } from "lucide-react"
 import { useAuth } from "@/lib/auth-context"
+import { useProfileStore } from "@/lib/profile-store"
+import { appendProgressEvent } from "@/lib/firestore-progress"
+import { todayDateString } from "@/lib/progress"
 import { authedFetch } from "@/lib/api-client"
 import { cn } from "@/lib/utils"
 import { toast } from "@/components/ui/use-toast"
@@ -25,10 +28,24 @@ interface Props {
   taskTitle: string
   taskDescription?: string
   goalTitle?: string
+  /** Attribution for the logged quiz_taken event. */
+  taskId?: string
+  goalId?: string
+  scheduledFor?: string
 }
 
-export default function TaskQuizDialog({ open, onOpenChange, taskTitle, taskDescription, goalTitle }: Props) {
-  const { getAccessToken, signInWithGoogle, signOut } = useAuth()
+export default function TaskQuizDialog({
+  open,
+  onOpenChange,
+  taskTitle,
+  taskDescription,
+  goalTitle,
+  taskId,
+  goalId,
+  scheduledFor,
+}: Props) {
+  const { getAccessToken, signInWithGoogle, signOut, userInfo } = useAuth()
+  const { profile } = useProfileStore()
   const auth = { getAccessToken, signInWithGoogle, signOut }
   const [loading, setLoading] = useState(false)
   const [questions, setQuestions] = useState<QuizQuestion[] | null>(null)
@@ -146,7 +163,27 @@ export default function TaskQuizDialog({ open, onOpenChange, taskTitle, taskDesc
           {!showResults && questions && (
             <>
               <Button variant="ghost" onClick={() => onOpenChange(false)}>Skip</Button>
-              <Button className="btn-purple" disabled={!allAnswered} onClick={() => setShowResults(true)}>
+              <Button
+                className="btn-purple"
+                disabled={!allAnswered}
+                onClick={() => {
+                  setShowResults(true)
+                  if (questions && userInfo?.uid) {
+                    const correct = questions.reduce(
+                      (acc, q, i) => acc + (answers[i] === q.correctIndex ? 1 : 0),
+                      0,
+                    )
+                    void appendProgressEvent(userInfo.uid, {
+                      type: "quiz_taken",
+                      taskId,
+                      goalId,
+                      scheduledFor,
+                      dayKey: todayDateString(profile?.timezone),
+                      quizScore: { correct, total: questions.length },
+                    })
+                  }
+                }}
+              >
                 See results
               </Button>
             </>
