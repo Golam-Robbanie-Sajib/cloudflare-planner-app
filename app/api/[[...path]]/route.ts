@@ -32,11 +32,17 @@ import {
 export const runtime = "edge"
 
 const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+// Model IDs are env-overridable so they can be swapped from the Cloudflare
+// dashboard without a code deploy (Groq deprecates/renames models on its own
+// schedule). Set GROQ_FAST_MODEL / GROQ_SMART_MODEL to the exact ID from
+// https://console.groq.com/docs/models — a wrong ID fails the request at
+// runtime with a 404 from Groq, so verify against that list before switching.
+//
 // Cheap & fast classifier for /chat-message (intent + param extraction).
-const GROQ_FAST_MODEL = "llama-3.1-8b-instant"
+const GROQ_FAST_MODEL = process.env.GROQ_FAST_MODEL || "llama-3.1-8b-instant"
 // Heavyweight model for plan generation and quizzes — quality matters more
 // than latency for these.
-const GROQ_SMART_MODEL = "openai/gpt-oss-120b"
+const GROQ_SMART_MODEL = process.env.GROQ_SMART_MODEL || "openai/gpt-oss-120b"
 const CALENDAR_API_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
 const DEFAULT_TIMEZONE = "Asia/Dhaka"
 
