@@ -42,6 +42,8 @@ interface CalendarStore {
   addTask: (taskData: Omit<CalendarTask, 'id' | 'createdAt' | 'updatedAt'>) => Promise<string | null>
   updateTask: (id: string, updates: Partial<CalendarTask>) => Promise<void>
   toggleTask: (id: string) => Promise<void>
+  /** Set a task aside without penalty. Neutral for streaks and progression. */
+  skipTask: (id: string) => Promise<void>
   deleteTask: (id: string) => Promise<void>
   // Returns the IDs of the tasks just written so the caller can update their
   // sync status after talking to Google Calendar.
@@ -139,6 +141,25 @@ export function CalendarProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  const skipTask = async (id: string) => {
+    const task = tasks.find(t => t.id === id)
+    if (!task || !userInfo?.uid) return
+    const nowSkipped = !task.skipped
+    await updateTaskInFirestore(userInfo.uid, id, {
+      skipped: nowSkipped,
+      skippedAt: nowSkipped ? Timestamp.now() : null,
+    })
+    if (nowSkipped) {
+      void appendProgressEvent(userInfo.uid, {
+        type: "task_skipped",
+        taskId: id,
+        goalId: task.goalId,
+        scheduledFor: task.date,
+        dayKey: todayDateString(profile?.timezone),
+      })
+    }
+  }
+
   const deleteTask = async (id: string) => {
     if (!userInfo?.uid) return
     await deleteTaskFromFirestore(userInfo.uid, id)
@@ -198,6 +219,7 @@ export function CalendarProvider({ children }: { children: ReactNode }) {
       addTask,
       updateTask,
       toggleTask,
+      skipTask,
       deleteTask,
       addAIGeneratedTasks,
       applySyncResults,

@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Check, Flame, BellRing, Bell, AlarmClock, CheckCheck, Target, Timer } from "lucide-react"
+import { Check, Flame, BellRing, Bell, AlarmClock, CheckCheck, Target, Timer, SkipForward, Shield } from "lucide-react"
 import { useCalendarStore } from "@/lib/calendar-store"
 import { useGoalStore } from "@/lib/goal-store"
 import { useProfileStore } from "@/lib/profile-store"
@@ -23,7 +23,7 @@ import { toast } from "@/components/ui/use-toast"
 import { cn } from "@/lib/utils"
 
 export default function TodayWidget() {
-  const { tasks, toggleTask, updateTask } = useCalendarStore()
+  const { tasks, toggleTask, updateTask, skipTask } = useCalendarStore()
   const { goals } = useGoalStore()
   const { profile } = useProfileStore()
   const goalNameById = (id?: string) => (id ? goals.find((g) => g.id === id)?.title : undefined)
@@ -33,7 +33,7 @@ export default function TodayWidget() {
   // user doesn't get phantom streak breaks at the browser's local midnight.
   const timeZone = profile?.timezone
   const stats = useMemo(() => computeProgress(tasks, { timeZone }), [tasks, timeZone])
-  const { todayTasks, todayCompleted, todayTotal, overdueTasks, currentStreak, bestStreak } = stats
+  const { todayTasks, todayCompleted, todayTotal, overdueTasks, currentStreak, bestStreak, freezesRemaining } = stats
 
   const [perm, setPerm] = useState<PermissionState>("default")
   const [focusTask, setFocusTask] = useState<CalendarTask | null>(null)
@@ -106,6 +106,16 @@ export default function TodayWidget() {
               <Flame className="h-3.5 w-3.5 mr-1" />
               {currentStreak}-day streak
             </Badge>
+            {freezesRemaining < 2 && (
+              <Badge
+                variant="outline"
+                className="border-blue-300 text-blue-700"
+                title="Missed days your streak can still absorb before it breaks"
+              >
+                <Shield className="h-3.5 w-3.5 mr-1" />
+                {freezesRemaining} save{freezesRemaining === 1 ? "" : "s"} left
+              </Badge>
+            )}
             {overdueTasks.length > 0 && (
               <Badge variant="outline" className="border-red-300 text-red-700">
                 {overdueTasks.length} overdue
@@ -167,6 +177,11 @@ export default function TodayWidget() {
                     <span className="text-xs text-slate-500">
                       {task.startTime} – {task.endTime}
                     </span>
+                    {task.skipped && (
+                      <Badge variant="outline" className="text-[10px] py-0 h-4 px-1 border-blue-300 text-blue-700">
+                        skipped
+                      </Badge>
+                    )}
                     {goalNameById(task.goalId) && (
                       <Badge variant="outline" className="text-[10px] py-0 h-4 px-1 border-purple-300 text-purple-700">
                         <Target className="h-2.5 w-2.5 mr-0.5" />
@@ -182,6 +197,14 @@ export default function TodayWidget() {
                     </Button>
                     <Button variant="ghost" size="sm" onClick={() => snooze(task.id)} title="Move to tomorrow">
                       <AlarmClock className="h-3.5 w-3.5 mr-1" />Tomorrow
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => skipTask(task.id)}
+                      title="Skip without breaking your streak"
+                    >
+                      <SkipForward className="h-3.5 w-3.5 mr-1" />Skip
                     </Button>
                   </div>
                 )}

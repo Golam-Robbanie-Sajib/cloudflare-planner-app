@@ -100,6 +100,10 @@ export interface ProgressStats {
   // completed. Only counts tasks that have a usable completedAt, so it stays
   // undefined until there's real evidence. Positive = running late.
   avgDelayDays?: number
+  /** Forgiveness left before the current streak would break. */
+  freezesRemaining: number
+  /** Tasks the user explicitly set aside (neutral, not failures). */
+  skippedTasks: number
   // Tasks completed on the day they were scheduled, as a fraction of tasks
   // with completion evidence. This is the honest "did you stick to the plan"
   // number, distinct from completionRate ("did you eventually do it").
@@ -111,10 +115,15 @@ export interface ProgressOptions {
   timeZone?: string
   /** Injectable for tests; defaults to now. */
   now?: Date
+  /**
+   * How many genuinely-missed days a streak can absorb before breaking.
+   * Duolingo caps held freezes at 2 (3 for Streak Society); we mirror that.
+   */
+  freezeBudget?: number
 }
 
 export function computeProgress(tasks: CalendarTask[], opts: ProgressOptions = {}): ProgressStats {
-  const { timeZone, now = new Date() } = opts
+  const { timeZone, now = new Date(), freezeBudget = 2 } = opts
   const todayStr = dayKeyInTz(now, timeZone)
 
   const todayTasks = tasks
@@ -124,7 +133,7 @@ export function computeProgress(tasks: CalendarTask[], opts: ProgressOptions = {
 
   // Overdue: scheduled before today and still not done. Pure string compare
   // works because both sides are YYYY-MM-DD in the same zone.
-  const overdueTasks = tasks.filter(t => !t.completed && t.date < todayStr)
+  const overdueTasks = tasks.filter(t => !t.completed && !t.skipped && t.date < todayStr)
 
   // ── Streak: days on which the user actually completed something ──
   // Keyed on completedAt, not the scheduled date. Tasks completed before
@@ -138,12 +147,47 @@ export function computeProgress(tasks: CalendarTask[], opts: ProgressOptions = {
     activeDays.add(dayKeyInTz(done, timeZone))
   }
 
+  // Days where work was DUE, and days where everything due was skipped.
+  // A day with nothing scheduled can't be a failure, and neither can a day
+  // the user explicitly set aside.
+  const dueByDay = new Map<string, { total: number; skipped: number }>()
+  for (const t of tasks) {
+    const entry = dueByDay.get(t.date) ?? { total: 0, skipped: 0 }
+    entry.total++
+    if (t.skipped) entry.skipped++
+    dueByDay.set(t.date, entry)
+  }
+
+  // A gap day is forgiven — streak survives, but doesn't grow — when nothing
+  // was due, or everything due was skipped.
+  const isNeutralDay = (key: string): boolean => {
+    const due = dueByDay.get(key)
+    if (!due || due.total === 0) return true
+    return due.skipped >= due.total
+  }
+
+  // Lally et al. 2010 found a single missed opportunity does not measurably
+  // impair habit formation, and the what-the-hell effect says a zeroed
+  // counter is itself what triggers abandonment. So genuine misses draw on a
+  // small forgiveness budget before the streak breaks. Derived rather than a
+  // consumable inventory: nothing to write, nothing to desync.
+  let freezesLeft = freezeBudget
+
   let currentStreak = 0
   // Today counts as "in progress" — if nothing is done yet today we start
   // counting from yesterday rather than zeroing a live streak.
   let cursor = activeDays.has(todayStr) ? todayStr : addDaysToKey(todayStr, -1)
-  while (activeDays.has(cursor)) {
-    currentStreak++
+  // Bounded walk so a user with a long history can't spin here.
+  for (let guard = 0; guard < 400; guard++) {
+    if (activeDays.has(cursor)) {
+      currentStreak++
+    } else if (isNeutralDay(cursor)) {
+      // Neutral — keep walking, don't count the day.
+    } else if (freezesLeft > 0) {
+      freezesLeft--
+    } else {
+      break
+    }
     cursor = addDaysToKey(cursor, -1)
   }
 
@@ -181,6 +225,8 @@ export function computeProgress(tasks: CalendarTask[], opts: ProgressOptions = {
     todayCompleted,
     todayTotal: todayTasks.length,
     overdueTasks,
+    freezesRemaining: freezesLeft,
+    skippedTasks: tasks.filter(t => t.skipped).length,
     currentStreak,
     bestStreak,
     totalCompleted,

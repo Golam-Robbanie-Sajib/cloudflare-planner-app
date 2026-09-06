@@ -81,6 +81,10 @@ export function computeProgressionLevel(opts: {
     if (t.completed) {
       level = stepLevel(level, "completed")
       completed++
+    } else if (t.skipped) {
+      // Consciously set aside — neutral, no decay. Distinguishing this from
+      // a silent miss is the whole point of the skip state.
+      continue
     } else if (t.date < todayKey) {
       // Past its day and still not done.
       level = stepLevel(level, "missed")
