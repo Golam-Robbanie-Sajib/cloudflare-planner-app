@@ -1,11 +1,15 @@
 // components/focus-timer.tsx
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Play, Pause, RotateCcw, Check, X } from "lucide-react"
 import { useCalendarStore } from "@/lib/calendar-store"
+import { useAuth } from "@/lib/auth-context"
+import { useProfileStore } from "@/lib/profile-store"
+import { appendProgressEvent } from "@/lib/firestore-progress"
+import { todayDateString } from "@/lib/progress"
 import { toast } from "@/components/ui/use-toast"
 import type { CalendarTask } from "@/lib/firestore-calendar"
 
@@ -33,9 +37,31 @@ function fmt(seconds: number): string {
 
 export default function FocusTimer({ task, open, onOpenChange }: Props) {
   const { toggleTask } = useCalendarStore()
+  const { userInfo } = useAuth()
+  const { profile } = useProfileStore()
   const initialRef = useRef(0)
   const [remaining, setRemaining] = useState(0)
   const [running, setRunning] = useState(false)
+  // Seconds actually elapsed with the timer running. Previously the whole
+  // session was discarded on unmount, so real effort was never recorded and
+  // "hours remaining" could only ever be estimated from scheduled ranges.
+  const elapsedRef = useRef(0)
+  const loggedRef = useRef(false)
+
+  // Persist the session once, on close, if any meaningful time was spent.
+  const flushFocusSession = useCallback(() => {
+    const minutes = Math.round(elapsedRef.current / 60)
+    if (loggedRef.current || minutes < 1 || !userInfo?.uid) return
+    loggedRef.current = true
+    void appendProgressEvent(userInfo.uid, {
+      type: "focus_session",
+      taskId: task?.id,
+      goalId: task?.goalId,
+      scheduledFor: task?.date,
+      dayKey: todayDateString(profile?.timezone),
+      minutesSpent: minutes,
+    })
+  }, [task?.id, task?.goalId, task?.date, userInfo?.uid, profile?.timezone])
 
   // Reset countdown whenever a new task is opened.
   useEffect(() => {
@@ -43,6 +69,8 @@ export default function FocusTimer({ task, open, onOpenChange }: Props) {
     const d = durationFromTask(task)
     initialRef.current = d
     setRemaining(d)
+    elapsedRef.current = 0
+    loggedRef.current = false
     setRunning(true)
   }, [task, open])
 
@@ -50,6 +78,7 @@ export default function FocusTimer({ task, open, onOpenChange }: Props) {
   useEffect(() => {
     if (!running) return
     const id = window.setInterval(() => {
+      elapsedRef.current += 1
       setRemaining(prev => {
         if (prev <= 1) {
           window.clearInterval(id)
@@ -91,12 +120,21 @@ export default function FocusTimer({ task, open, onOpenChange }: Props) {
     setRunning(false)
   }
   const markDoneAndClose = async () => {
+    flushFocusSession()
     if (task && !task.completed) await toggleTask(task.id)
     onOpenChange(false)
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        // Record the session on any close path — X, Escape, backdrop click —
+        // not just the explicit "Mark done" button.
+        if (!next) flushFocusSession()
+        onOpenChange(next)
+      }}
+    >
       <DialogContent className="max-w-sm card-colorful">
         <DialogHeader>
           <DialogTitle>{task?.title ?? "Focus"}</DialogTitle>

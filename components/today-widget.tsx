@@ -197,6 +197,9 @@ export default function TodayWidget() {
         taskTitle={quizTask?.title ?? ""}
         taskDescription={quizTask?.description}
         goalTitle={goalNameById(quizTask?.goalId)}
+        taskId={quizTask?.id}
+        goalId={quizTask?.goalId}
+        scheduledFor={quizTask?.date}
       />
     </Card>
   )

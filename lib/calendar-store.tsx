@@ -12,6 +12,9 @@ import {
   subscribeToTasks,
 } from "./firestore-calendar"
 import { updateGoal as updateGoalInFirestore } from "./firestore-goals"
+import { appendProgressEvent } from "./firestore-progress"
+import { useProfileStore } from "./profile-store"
+import { todayDateString } from "./progress"
 import { Timestamp } from "firebase/firestore"
 
 export interface AIGeneratedTaskInput {
@@ -58,6 +61,9 @@ const parseIsoSafely = (iso: string): Date | null => {
 export function CalendarProvider({ children }: { children: ReactNode }) {
   const [tasks, setTasks] = useState<CalendarTask[]>([])
   const [loading, setLoading] = useState(true)
+  // ProfileProvider wraps CalendarProvider in app/layout.tsx, so this is safe.
+  // Used purely to resolve day keys in the user's own timezone.
+  const { profile } = useProfileStore()
   const { userInfo, isAuthenticated } = useAuth()
 
   useEffect(() => {
@@ -99,6 +105,17 @@ export function CalendarProvider({ children }: { children: ReactNode }) {
     await updateTaskInFirestore(userInfo.uid, id, {
       completed: nowDone,
       completedAt: nowDone ? Timestamp.now() : null,
+    })
+
+    // Append to the immutable log. Un-completing nulls `completedAt` on the
+    // task doc, so without this the evidence that the work ever happened is
+    // destroyed and week-over-week comparisons become impossible.
+    void appendProgressEvent(userInfo.uid, {
+      type: nowDone ? "task_completed" : "task_uncompleted",
+      taskId: id,
+      goalId: task.goalId,
+      scheduledFor: task.date,
+      dayKey: todayDateString(profile?.timezone),
     })
 
     // Roll the parent goal's status forward/back. Without this a goal whose
