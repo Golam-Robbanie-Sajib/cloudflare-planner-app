@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge"
 import { Check, Flame, BellRing, Bell, AlarmClock, CheckCheck, Target, Timer } from "lucide-react"
 import { useCalendarStore } from "@/lib/calendar-store"
 import { useGoalStore } from "@/lib/goal-store"
+import { useProfileStore } from "@/lib/profile-store"
 import FocusTimer from "@/components/focus-timer"
 import TaskQuizDialog from "@/components/task-quiz-dialog"
 import type { CalendarTask } from "@/lib/firestore-calendar"
@@ -24,10 +25,14 @@ import { cn } from "@/lib/utils"
 export default function TodayWidget() {
   const { tasks, toggleTask, updateTask } = useCalendarStore()
   const { goals } = useGoalStore()
+  const { profile } = useProfileStore()
   const goalNameById = (id?: string) => (id ? goals.find((g) => g.id === id)?.title : undefined)
 
   // Memoize derived stats so we don't recompute on every keystroke elsewhere.
-  const stats = useMemo(() => computeProgress(tasks), [tasks])
+  // All day boundaries resolve in the user's profile timezone so a traveling
+  // user doesn't get phantom streak breaks at the browser's local midnight.
+  const timeZone = profile?.timezone
+  const stats = useMemo(() => computeProgress(tasks, { timeZone }), [tasks, timeZone])
   const { todayTasks, todayCompleted, todayTotal, overdueTasks, currentStreak, bestStreak } = stats
 
   const [perm, setPerm] = useState<PermissionState>("default")
@@ -72,7 +77,7 @@ export default function TodayWidget() {
   }
 
   const snooze = async (taskId: string) => {
-    await updateTask(taskId, { date: tomorrowDateString() })
+    await updateTask(taskId, { date: tomorrowDateString(timeZone) })
     toast({ title: "Snoozed to tomorrow" })
   }
 

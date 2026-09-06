@@ -44,7 +44,24 @@ const GROQ_FAST_MODEL = process.env.GROQ_FAST_MODEL || "llama-3.1-8b-instant"
 // than latency for these.
 const GROQ_SMART_MODEL = process.env.GROQ_SMART_MODEL || "openai/gpt-oss-120b"
 const CALENDAR_API_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
-const DEFAULT_TIMEZONE = "Asia/Dhaka"
+// Last-resort fallback only. Every request should carry the user's own
+// timezone (from UserProfile.timezone); this is what we use when an old
+// client omits it. Previously this was applied unconditionally, which meant
+// a user in New York scheduling 9am got a Google Calendar event at 9am
+// Dhaka — 11pm the previous day for them.
+const FALLBACK_TIMEZONE = "Asia/Dhaka"
+
+// Validates an IANA name against the runtime's own tz database before we
+// hand it to Google. An unknown zone would make the Calendar insert fail.
+function resolveTimeZone(candidate?: string): string {
+  if (!candidate) return FALLBACK_TIMEZONE
+  try {
+    new Intl.DateTimeFormat("en-CA", { timeZone: candidate }).format(new Date())
+    return candidate
+  } catch {
+    return FALLBACK_TIMEZONE
+  }
+}
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -325,7 +342,7 @@ Respond in plain Markdown — NO JSON, NO code fences. Write a multi-paragraph n
 // System prompt for the structured-tasks call. Same as the combined one, but
 // instructs the model to omit the narrative since the streaming endpoint
 // produces that separately.
-function buildTasksSystemPrompt(currentDate: string): string {
+function buildTasksSystemPrompt(currentDate: string, timeZone: string): string {
   return `You are an AI specialized in generating structured, realistic learning plans.
 
 You always respond with a single JSON object — no prose outside it — matching this schema exactly:
@@ -345,7 +362,7 @@ You always respond with a single JSON object — no prose outside it — matchin
 
 Field rules:
 - "structured_tasks": one entry per concrete calendar block. Each task must be schedulable as a single Google Calendar event.
-- "startTime" / "endTime": ISO 8601 datetime WITHOUT a timezone offset (e.g. "2025-04-12T09:00:00"). They will be interpreted in the timezone '${DEFAULT_TIMEZONE}'.
+- "startTime" / "endTime": ISO 8601 datetime WITHOUT a timezone offset (e.g. "2025-04-12T09:00:00"). They will be interpreted in the timezone '${timeZone}'.
 - "resources": 0-4 high-signal recommendations for THIS task — official docs, well-known tutorials, specific exercises, named books. Only include URLs you're confident exist (https only); omit url if uncertain.
 - The current date is ${currentDate}. Never schedule tasks in the past.
 - Mix theory, practice, and review tasks. Build difficulty progressively. Keep individual task duration realistic (typically 30–180 minutes).
@@ -354,6 +371,7 @@ Field rules:
 
 async function runGeneratePlan(apiKey: string, req: GeneratePlanRequest): Promise<{ tasks: BackendTask[] | null; plan: string }> {
   const currentDate = new Date().toISOString().split("T")[0]
+  const timeZone = resolveTimeZone(req.timeZone)
   const systemPrompt = `You are an AI specialized in generating structured, realistic learning plans.
 
 You always respond with a single JSON object — no prose outside it — matching this schema exactly:
@@ -375,7 +393,7 @@ You always respond with a single JSON object — no prose outside it — matchin
 Field rules:
 - "human_readable_plan": a conversational, multi-paragraph narrative summarizing the plan, week by week or phase by phase.
 - "structured_tasks": one entry per concrete calendar block. Each task must be schedulable as a single Google Calendar event.
-- "startTime" / "endTime": ISO 8601 datetime WITHOUT a timezone offset (e.g. "2025-04-12T09:00:00"). They will be interpreted in the timezone '${DEFAULT_TIMEZONE}'.
+- "startTime" / "endTime": ISO 8601 datetime WITHOUT a timezone offset (e.g. "2025-04-12T09:00:00"). They will be interpreted in the timezone '${timeZone}'.
 - "resources": 0-4 high-signal recommendations for THIS task — official docs, well-known tutorials, specific exercises, named books. Only include URLs you're confident exist (https only); omit url if uncertain. Prefer breadth over depth: a doc + a video + an exercise is better than 4 articles.
 - The current date is ${currentDate}. Never schedule tasks in the past — if the requested start date is in the past, shift the plan forward.
 - Mix theory, practice, and review tasks. Build difficulty progressively. Keep individual task duration realistic (typically 30–180 minutes).
@@ -411,6 +429,7 @@ async function pushTasksToGoogleCalendar(
   skillName: string,
   tasks: BackendTask[],
   accessToken: string,
+  timeZone: string,
 ): Promise<{ message: string; results: { index: number; status: "synced" | "failed"; googleEventId?: string; googleEventLink?: string; error?: string }[] }> {
   const results: { index: number; status: "synced" | "failed"; googleEventId?: string; googleEventLink?: string; error?: string }[] = []
   for (let i = 0; i < tasks.length; i++) {
@@ -418,8 +437,8 @@ async function pushTasksToGoogleCalendar(
     const eventBody = {
       summary: t.summary || `${skillName} Task`,
       description: t.description || "",
-      start: { dateTime: t.startTime, timeZone: DEFAULT_TIMEZONE },
-      end: { dateTime: t.endTime, timeZone: DEFAULT_TIMEZONE },
+      start: { dateTime: t.startTime, timeZone },
+      end: { dateTime: t.endTime, timeZone },
     }
     try {
       const response = await fetch(CALENDAR_API_URL, {
@@ -538,6 +557,7 @@ app.post("/generate-plan-stream", async (c) => {
     if (!parsed.ok) return parsed.response
     const req = parsed.data
     const currentDate = new Date().toISOString().split("T")[0]
+    const timeZone = resolveTimeZone(req.timeZone)
 
     const baseMessages: OpenAIMessage[] = req.chatHistoryForContext
       ? geminiContentsToOpenAIMessages(req.chatHistoryForContext)
@@ -553,7 +573,7 @@ app.post("/generate-plan-stream", async (c) => {
         // overlaps with the streamed narrative — we won't await it here.
         const tasksPromise = (async () => {
           const raw = await callGroq(apiKey, {
-            systemPrompt: buildTasksSystemPrompt(currentDate),
+            systemPrompt: buildTasksSystemPrompt(currentDate, timeZone),
             messages: [...baseMessages, { role: "user", content: `${userPrompt}\n\nReturn ONLY the JSON object described in the system prompt.` }],
             jsonMode: true,
             temperature: 0.5,
@@ -616,7 +636,12 @@ app.post("/integrate-plan", async (c) => {
     if (!accessToken) return c.json({ detail: "Authorization header is missing" }, 401)
     const parsed = await parseBody(c, IntegratePlanRequestSchema)
     if (!parsed.ok) return parsed.response
-    const { message, results } = await pushTasksToGoogleCalendar(parsed.data.skillName, parsed.data.structuredTasks, accessToken)
+    const { message, results } = await pushTasksToGoogleCalendar(
+      parsed.data.skillName,
+      parsed.data.structuredTasks,
+      accessToken,
+      resolveTimeZone(parsed.data.timeZone),
+    )
     const calendarEventLinks = results.filter((r) => r.status === "synced" && r.googleEventLink).map((r) => r.googleEventLink as string)
     return c.json({ message, results, calendarEventLinks })
   } catch (e) {
@@ -632,6 +657,7 @@ app.post("/reschedule-event", async (c) => {
     const parsed = await parseBody(c, RescheduleRequestSchema)
     if (!parsed.ok) return parsed.response
     const { googleEventId, startTime, endTime } = parsed.data
+    const timeZone = resolveTimeZone(parsed.data.timeZone)
 
     const url = `${CALENDAR_API_URL}/${encodeURIComponent(googleEventId)}`
     const response = await fetch(url, {
@@ -641,8 +667,8 @@ app.post("/reschedule-event", async (c) => {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        start: { dateTime: startTime, timeZone: DEFAULT_TIMEZONE },
-        end: { dateTime: endTime, timeZone: DEFAULT_TIMEZONE },
+        start: { dateTime: startTime, timeZone },
+        end: { dateTime: endTime, timeZone },
       }),
     })
     if (!response.ok) {

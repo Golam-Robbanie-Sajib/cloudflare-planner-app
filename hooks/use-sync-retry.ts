@@ -8,6 +8,7 @@
 
 import { useCallback, useState } from "react"
 import { useCalendarStore } from "@/lib/calendar-store"
+import { useProfileStore } from "@/lib/profile-store"
 import { useIntegratePlan } from "@/hooks/use-api-mutations"
 import { toast } from "@/components/ui/use-toast"
 import type { CalendarTask } from "@/lib/firestore-calendar"
@@ -20,6 +21,7 @@ function toIsoFromTask(t: CalendarTask, which: "start" | "end"): string {
 
 export function useSyncRetry() {
   const { applySyncResults, tasks } = useCalendarStore()
+  const { profile } = useProfileStore()
   const integrate = useIntegratePlan()
   const [retryingId, setRetryingId] = useState<string | null>(null)
 
@@ -39,6 +41,7 @@ export function useSyncRetry() {
             resources: [],
           },
         ],
+        timeZone: profile?.timezone,
       })
       const r = data.results?.[0]
       if (!r) throw new Error("No result returned from sync.")
@@ -60,7 +63,7 @@ export function useSyncRetry() {
     } finally {
       setRetryingId(null)
     }
-  }, [tasks, integrate, applySyncResults])
+  }, [tasks, integrate, applySyncResults, profile?.timezone])
 
   return { retry, retryingId }
 }

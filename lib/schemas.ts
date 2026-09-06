@@ -143,7 +143,18 @@ export const UserProgressSchema = z.object({
 })
 export type UserProgress = z.infer<typeof UserProgressSchema>
 
+// IANA timezone name (e.g. "America/New_York"). Sent by the client from
+// UserProfile.timezone so scheduled times and Google Calendar events land in
+// the user's actual zone rather than a server-side default. Loosely validated
+// here — the server re-checks it against Intl before use.
+export const timeZoneName = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[A-Za-z][A-Za-z0-9+_\-]*(\/[A-Za-z0-9+_\-]+)*$/, "Not a valid IANA timezone name")
+
 export const GeneratePlanRequestSchema = z.object({
+  timeZone: timeZoneName.optional(),
   goal: z.string().min(1),
   durationDays: z.number().int().min(1).max(365),
   startDate: dateKey,
@@ -170,6 +181,7 @@ export type GeneratePlanResponse = z.infer<typeof GeneratePlanResponseSchema>
 export const IntegratePlanRequestSchema = z.object({
   skillName: z.string().min(1),
   structuredTasks: z.array(BackendTaskSchema).min(1),
+  timeZone: timeZoneName.optional(),
 })
 export type IntegratePlanRequest = z.infer<typeof IntegratePlanRequestSchema>
 
@@ -193,6 +205,7 @@ export type IntegratePlanResponse = z.infer<typeof IntegratePlanResponseSchema>
 
 export const RescheduleRequestSchema = z
   .object({
+    timeZone: timeZoneName.optional(),
     googleEventId: z.string().min(1),
     startTime: isoDateTimeLoose,
     endTime: isoDateTimeLoose,

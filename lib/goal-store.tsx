@@ -40,7 +40,9 @@ export function GoalProvider({ children }: { children: ReactNode }) {
     });
 
     return unsubscribe;
-  }, [isAuthenticated, userInfo?.email]);
+    // Keyed on uid — the email dep here was left over from the email→uid
+    // migration and meant the subscription didn't resubscribe correctly.
+  }, [isAuthenticated, userInfo?.uid]);
 
   const addGoal = async (goalData: Omit<UserGoal, "id" | "createdAt" | "updatedAt">) => {
     if (!userInfo?.uid) return null;

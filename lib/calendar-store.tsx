@@ -11,6 +11,7 @@ import {
   deleteTask as deleteTaskFromFirestore,
   subscribeToTasks,
 } from "./firestore-calendar"
+import { updateGoal as updateGoalInFirestore } from "./firestore-goals"
 import { Timestamp } from "firebase/firestore"
 
 export interface AIGeneratedTaskInput {
@@ -99,6 +100,26 @@ export function CalendarProvider({ children }: { children: ReactNode }) {
       completed: nowDone,
       completedAt: nowDone ? Timestamp.now() : null,
     })
+
+    // Roll the parent goal's status forward/back. Without this a goal whose
+    // tasks are all finished stays "in_progress" forever — status was only
+    // ever set by hand.
+    if (task.goalId) {
+      const siblings = tasks.filter(t => t.goalId === task.goalId)
+      const remaining = siblings.filter(t => (t.id === id ? !nowDone : !t.completed)).length
+      try {
+        if (remaining === 0) {
+          await updateGoalInFirestore(userInfo.uid, task.goalId, { status: "completed" })
+        } else if (nowDone === false) {
+          // Un-checking a task on a finished goal reopens it.
+          await updateGoalInFirestore(userInfo.uid, task.goalId, { status: "in_progress" })
+        }
+      } catch (e) {
+        // Non-fatal: the task toggle already succeeded, and goal status is
+        // derived state we can recompute. Don't fail the user's click.
+        console.warn("Could not roll up goal status", e)
+      }
+    }
   }
 
   const deleteTask = async (id: string) => {

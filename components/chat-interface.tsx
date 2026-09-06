@@ -28,6 +28,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { useAuth } from "@/lib/auth-context"
 import { useGoalStore } from "@/lib/goal-store";
 import { useProfileStore } from "@/lib/profile-store";
+import { computeProgress } from "@/lib/progress";
 import GoogleAuthButton from "@/components/google-auth-button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { fetchGoogleBusySlots } from "@/lib/gcal-busy";
@@ -101,9 +102,11 @@ export default function ChatInterface() {
   // /generate-plan call so the AI tunes the new plan to actual completion rate.
   const computeProgressSignal = (): UserProgressSignal | undefined => {
     if (!allTasks || allTasks.length === 0) return undefined;
-    const total = allTasks.length;
-    const completed = allTasks.filter(t => t.completed).length;
-    if (total < 3) return undefined; // not enough signal yet
+    // Single source of truth for the derived numbers — same helper the Today
+    // widget and leaderboard use, so the AI can't be told something different
+    // from what the user is looking at.
+    const stats = computeProgress(allTasks, { timeZone: profile?.timezone });
+    if (stats.totalTasks < 3) return undefined; // not enough signal yet
     const completedTitles = allTasks
       .filter(t => t.completed)
       .sort((a, b) => {
@@ -113,12 +116,7 @@ export default function ChatInterface() {
       })
       .slice(0, 5)
       .map(t => t.title);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const missed = allTasks
-      .filter(t => !t.completed && new Date(t.date + "T00:00:00") < today)
-      .slice(-5)
-      .map(t => t.title);
+    const missed = stats.overdueTasks.slice(-5).map(t => t.title);
     // Multi-goal load summary. Estimate hours by parsing "HH:MM" task ranges.
     const goalsLoad = goals
       .filter(g => g.status !== "completed")
@@ -135,9 +133,13 @@ export default function ChatInterface() {
       .filter(g => g.tasksRemaining > 0)
       .slice(0, 10);
     return {
-      completionRate: completed / total,
-      completedTasks: completed,
-      totalTasks: total,
+      completionRate: stats.completionRate ?? stats.totalCompleted / stats.totalTasks,
+      completedTasks: stats.totalCompleted,
+      totalTasks: stats.totalTasks,
+      // avgDelayDays has been declared in the schema and rendered into the
+      // prompt since the Groq migration, but was never computed — the AI was
+      // being told about slippage that never fired. Now it's real.
+      ...(stats.avgDelayDays !== undefined ? { avgDelayDays: stats.avgDelayDays } : {}),
       recentlyCompleted: completedTitles,
       recentlyMissed: missed,
       ...(goalsLoad.length ? { activeGoals: goalsLoad } : {}),
@@ -424,7 +426,11 @@ export default function ChatInterface() {
     // merged busySlots so the refinement gets the same schedule awareness
     // as a fresh plan.
     const payload: GeneratePlanRequestPayload = directPayload
-      ? { ...directPayload, busySlots: mergedBusy.length ? mergedBusy : undefined }
+      ? {
+          ...directPayload,
+          busySlots: mergedBusy.length ? mergedBusy : undefined,
+          timeZone: profile?.timezone,
+        }
       : {
           goal: planRequestParams.goal || "Learning Goal",
           durationDays: planRequestParams.durationDays || 7,
@@ -436,6 +442,9 @@ export default function ChatInterface() {
           chatHistoryForContext: mapMessagesToBackendHistory(messages),
           userProgress: computeProgressSignal(),
           busySlots: mergedBusy.length ? mergedBusy : undefined,
+          // The AI schedules wall-clock times; it needs to know which zone
+          // those times are in, and so does the Google Calendar write.
+          timeZone: profile?.timezone,
         };
 
     if (!payload.goal || !payload.durationDays || !payload.startDate) {
@@ -547,6 +556,9 @@ const handleIntegratePlanToCalendar = async () => {
     const data = await integratePlanMutation.mutateAsync({
       skillName: currentGeneratedPlan.title,
       structuredTasks: tasksForSync,
+      // Without this the backend falls back to a fixed zone and the Google
+      // Calendar events land at the wrong wall-clock time for the user.
+      timeZone: profile?.timezone,
     });
 
     // Map per-task Google results back onto the Firestore task IDs by index.

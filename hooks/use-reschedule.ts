@@ -12,6 +12,7 @@
 
 import { useCallback, useState } from "react"
 import { useCalendarStore } from "@/lib/calendar-store"
+import { useProfileStore } from "@/lib/profile-store"
 import { useRescheduleEvent } from "@/hooks/use-api-mutations"
 import { toast } from "@/components/ui/use-toast"
 
@@ -22,6 +23,7 @@ function toIso(date: string, time: string): string {
 
 export function useReschedule() {
   const { updateTask, tasks } = useCalendarStore()
+  const { profile } = useProfileStore()
   const reschedule = useRescheduleEvent()
   const [movingId, setMovingId] = useState<string | null>(null)
 
@@ -43,6 +45,7 @@ export function useReschedule() {
           googleEventId: task.googleEventId,
           startTime: toIso(newDate, task.startTime),
           endTime: toIso(newDate, task.endTime),
+          timeZone: profile?.timezone,
         })
         await updateTask(taskId, { syncStatus: "synced" })
       } catch (e) {
@@ -59,7 +62,7 @@ export function useReschedule() {
 
     toast({ title: "Rescheduled", description: `"${task.title}" moved to ${newDate}.` })
     setMovingId(null)
-  }, [tasks, updateTask, reschedule])
+  }, [tasks, updateTask, reschedule, profile?.timezone])
 
   return { moveTo, movingId }
 }
