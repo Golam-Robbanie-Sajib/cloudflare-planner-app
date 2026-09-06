@@ -6,7 +6,7 @@ import type React from "react"
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useState, useRef, useEffect } from "react"
-import { Send, CalendarIcon, Bot, User, Plus, Loader2, RefreshCw, Edit, Mic, MicOff } from "lucide-react"
+import { Send, CalendarIcon, Bot, User, Plus, Loader2, RefreshCw, Edit, Mic, MicOff, AlertTriangle } from "lucide-react"
 import { useSpeechInput } from "@/hooks/use-speech-input"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -29,6 +29,8 @@ import { useAuth } from "@/lib/auth-context"
 import { useGoalStore } from "@/lib/goal-store";
 import { useProfileStore } from "@/lib/profile-store";
 import { computeProgress } from "@/lib/progress";
+import { assessFeasibility } from "@/lib/plan-health";
+import { Timestamp } from "firebase/firestore";
 import GoogleAuthButton from "@/components/google-auth-button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { fetchGoogleBusySlots } from "@/lib/gcal-busy";
@@ -210,6 +212,8 @@ export default function ChatInterface() {
   // Surfaced in the plan dialog so the user knows the AI is actually
   // considering their existing schedule rather than planning blind.
   const [busyContext, setBusyContext] = useState<{ gcalCount: number; appCount: number } | null>(null);
+  // Set when the requested plan doesn't fit the user's real free time.
+  const [feasibilityNote, setFeasibilityNote] = useState<string | null>(null);
 
   // TanStack Query mutations replace the ad-hoc isChatting/isGeneratingPlan/
   // isIntegratingPlan flags. The aliases below preserve the rest of the
@@ -422,6 +426,29 @@ export default function ChatInterface() {
     );
     setBusyContext({ gcalCount, appCount });
 
+    // Prospective capacity check (Sunsama's model): tell the user the plan
+    // doesn't fit BEFORE we build it, rather than letting them discover the
+    // pile five days in. We warn but still generate — it's their call, and
+    // the AI is told to compress rather than refuse.
+    const dailyHoursForCheck = directPayload?.dailyHours || planRequestParams.dailyHours || 2;
+    const feasibility = assessFeasibility({
+      startDate: startDateForBusy,
+      durationDays: durationForBusy,
+      dailyHours: dailyHoursForCheck,
+      busySlots: mergedBusy,
+    });
+    setFeasibilityNote(
+      feasibility.feasible
+        ? null
+        : `Your calendar only leaves about ${Math.round(feasibility.totalFreeHours)}h free across these ${durationForBusy} days, and ${feasibility.tightDays.length} day${feasibility.tightDays.length === 1 ? " has" : "s have"} no room for a ${dailyHoursForCheck}h session. The plan will aim for shorter sessions where it has to.`,
+    );
+    if (!feasibility.feasible) {
+      toast({
+        title: "Tight schedule",
+        description: `${feasibility.tightDays.length} of ${durationForBusy} days are heavily booked. Generating a lighter plan that fits.`,
+      });
+    }
+
     // Refinement flow passes a partial directPayload — we still inject our
     // merged busySlots so the refinement gets the same schedule awareness
     // as a fresh plan.
@@ -538,10 +565,22 @@ const handleIntegratePlanToCalendar = async () => {
   let taskIds: string[] = [];
   try {
     if (goalInputForDialog.trim() !== "") {
+      // Derive a real deadline from the plan's last scheduled task. Until now
+      // UserGoal.targetDate had zero reads and zero writes anywhere in the
+      // repo, which meant "behind schedule" wasn't even expressible.
+      const lastTaskDate = tasksForSync
+        .map(t => t.startTime.split("T")[0])
+        .sort()
+        .at(-1);
+      const targetDate = lastTaskDate
+        ? Timestamp.fromDate(new Date(lastTaskDate + "T23:59:59"))
+        : undefined;
+
       const newGoalId = await addGoal({
         title: goalInputForDialog.trim(),
         description: `Goal for the plan: ${currentGeneratedPlan.title}`,
         status: "in_progress",
+        ...(targetDate ? { targetDate } : {}),
       });
       if (newGoalId) finalGoalId = newGoalId;
     }
@@ -797,6 +836,12 @@ const handleIntegratePlanToCalendar = async () => {
                 Planned around{" "}
                 <span className="font-medium text-slate-700">{busyContext.gcalCount}</span> Google Calendar event{busyContext.gcalCount === 1 ? "" : "s"} and{" "}
                 <span className="font-medium text-slate-700">{busyContext.appCount}</span> in-app task{busyContext.appCount === 1 ? "" : "s"}.
+              </p>
+            )}
+            {feasibilityNote && (
+              <p className="text-xs mt-2 flex items-start gap-1.5 rounded-md border border-amber-300 bg-amber-50 p-2 text-amber-800">
+                <AlertTriangle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+                <span>{feasibilityNote}</span>
               </p>
             )}
             {(currentGeneratedPlan?.humanReadablePlan || streamingPlan.narrative) && (

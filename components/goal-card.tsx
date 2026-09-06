@@ -13,6 +13,9 @@ import { useState } from "react";
 import AddEditGoalDialog from "./add-edit-goal-dialog";
 import { toast } from "@/components/ui/use-toast"
 import { useAuth } from "@/lib/auth-context";
+import { useProfileStore } from "@/lib/profile-store";
+import { computeGoalHealth, HEALTH_STYLES } from "@/lib/plan-health";
+import { Badge } from "@/components/ui/badge";
 import { newShareSlug, publishPlan } from "@/lib/firestore-share";
 import {
   AlertDialog,
@@ -34,10 +37,19 @@ export default function GoalCard({ goal }: GoalCardProps) {
   const { tasks } = useCalendarStore();
   const { deleteGoal } = useGoalStore();
   const { userInfo } = useAuth();
+  const { profile } = useProfileStore();
   const router = useRouter();
   const [sharing, setSharing] = useState(false);
 
   const relevantTasks = tasks.filter(task => task.goalId === goal.id);
+  // "Am I on track to finish by the deadline?" — the number that actually
+  // matters for a finite plan, as opposed to raw % complete.
+  const health = computeGoalHealth({
+    goal,
+    tasks,
+    dailyCapacityHours: profile?.defaultDailyHours ?? 2,
+    timeZone: profile?.timezone,
+  });
   const completedTasks = relevantTasks.filter(task => task.completed);
   const progress = relevantTasks.length > 0 ? (completedTasks.length / relevantTasks.length) * 100 : 0;
 
@@ -98,7 +110,12 @@ export default function GoalCard({ goal }: GoalCardProps) {
   return (
     <Card className="flex flex-col h-full card-colorful card-hover">
       <CardHeader>
-        <CardTitle className="text-purple-700">{goal.title}</CardTitle>
+        <div className="flex items-start justify-between gap-2">
+          <CardTitle className="text-purple-700">{goal.title}</CardTitle>
+          <Badge variant="outline" className={`flex-shrink-0 ${HEALTH_STYLES[health.status].className}`}>
+            {HEALTH_STYLES[health.status].label}
+          </Badge>
+        </div>
         <CardDescription>{goal.description || "No description."}</CardDescription>
       </CardHeader>
       <CardContent className="flex-grow">
@@ -111,6 +128,7 @@ export default function GoalCard({ goal }: GoalCardProps) {
           <div className="text-xs text-slate-500">
             {completedTasks.length} of {relevantTasks.length} tasks completed
           </div>
+          <p className="text-xs text-slate-600">{health.headline}</p>
         </div>
       </CardContent>
       <CardFooter className="flex justify-end gap-2 flex-wrap">
