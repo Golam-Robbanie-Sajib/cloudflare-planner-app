@@ -140,6 +140,11 @@ export const UserProgressSchema = z.object({
   recentlyCompleted: z.array(z.string()).optional(),
   recentlyMissed: z.array(z.string()).optional(),
   activeGoals: z.array(ActiveGoalLoadSchema).optional(),
+  // TrainerRoad-style progression level (1-10) plus the phrasing we want the
+  // model to act on. The point is to make the AI adjust DIFFICULTY rather
+  // than push the calendar back when the user falls behind.
+  progressionLevel: z.number().min(1).max(10).optional(),
+  difficultyGuidance: z.string().max(1000).optional(),
 })
 export type UserProgress = z.infer<typeof UserProgressSchema>
 

@@ -327,7 +327,15 @@ function buildPlanUserPrompt(req: GeneratePlanRequest): string {
       parts.push(`- Active goals already in progress (DO NOT overbook the user — distribute the new plan across days where they have headroom):`)
       p.activeGoals.forEach((g) => parts.push(`    • "${g.title}": ${g.tasksRemaining} tasks remaining (~${g.estimatedHoursRemaining}h)`))
     }
+    if (p.difficultyGuidance) {
+      parts.push(`\n***HOW TO PITCH THIS PLAN***`)
+      parts.push(p.difficultyGuidance)
+    }
     parts.push(`If completion rate is below 50%, reduce daily intensity and prefer shorter sessions. If above 85%, push slightly harder.`)
+    // The single most important scheduling instruction we give the model when
+    // someone has fallen behind. Pushing the original plan later snowballs;
+    // shrinking it converges.
+    parts.push(`CRITICAL: when the user is behind, do NOT simply shift the remaining tasks to later dates. Reduce the SCOPE and DIFFICULTY of what remains so it fits the time they actually have between now and the target date.`)
   }
   return parts.join("\n")
 }

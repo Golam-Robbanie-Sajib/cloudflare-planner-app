@@ -30,6 +30,7 @@ import { useGoalStore } from "@/lib/goal-store";
 import { useProfileStore } from "@/lib/profile-store";
 import { computeProgress } from "@/lib/progress";
 import { assessFeasibility } from "@/lib/plan-health";
+import { computeProgressionLevel, difficultyGuidanceFor } from "@/lib/progression";
 import { Timestamp } from "firebase/firestore";
 import GoogleAuthButton from "@/components/google-auth-button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -109,6 +110,8 @@ export default function ChatInterface() {
     // from what the user is looking at.
     const stats = computeProgress(allTasks, { timeZone: profile?.timezone });
     if (stats.totalTasks < 3) return undefined; // not enough signal yet
+    // Replayed from task outcomes — no stored counter to drift.
+    const progression = computeProgressionLevel({ tasks: allTasks, timeZone: profile?.timezone });
     const completedTitles = allTasks
       .filter(t => t.completed)
       .sort((a, b) => {
@@ -145,6 +148,10 @@ export default function ChatInterface() {
       recentlyCompleted: completedTitles,
       recentlyMissed: missed,
       ...(goalsLoad.length ? { activeGoals: goalsLoad } : {}),
+      // Adaptive difficulty: the AI gets the user's current level and an
+      // explicit instruction to scale scope rather than push dates.
+      progressionLevel: progression.level,
+      difficultyGuidance: difficultyGuidanceFor(progression),
     };
   };
 
